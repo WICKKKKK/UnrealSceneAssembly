@@ -117,51 +117,43 @@ def dinov3_info():
     return data
 
 
-def collection_schema(collection_name, kind):
+def collection_schema(collection_name):
     common_fields = [
         {"name": "pk", "data_type": "INT64", "is_primary": True, "auto_id": True},
         {"name": "asset_id", "data_type": "VARCHAR", "params": {"max_length": 128}},
         {"name": "project_name", "data_type": "VARCHAR", "params": {"max_length": 128}, "is_partition_key": True},
     ]
-    if kind == "cls":
-        fields = common_fields + [
-            {"name": "cls_embedding", "data_type": "FLOAT_VECTOR", "params": {"dim": config.DINO_DIMENSION}},
-        ]
-        indexes = [
-            {
-                "field_name": "cls_embedding",
-                "index_name": "cls_idx",
-                "index_type": "HNSW",
-                "metric_type": "IP",
-                "params": {"M": 16, "efConstruction": 256},
-            },
-        ]
-    elif kind == "patch":
-        fields = common_fields + [
-            {
-                "name": "patches",
-                "data_type": "ARRAY",
-                "element_type": "STRUCT",
-                "max_capacity": 256,
-                "struct_fields": [
-                    {"name": "patch_idx", "data_type": "INT16"},
-                    {"name": "patch_x", "data_type": "INT8"},
-                    {"name": "patch_y", "data_type": "INT8"},
-                    {"name": "embedding", "data_type": "FLOAT_VECTOR", "params": {"dim": config.DINO_DIMENSION}},
-                ],
-            },
-        ]
-        indexes = [
-            {
-                "field_name": "patches[embedding]",
-                "index_name": "patch_emb_idx",
-                "index_type": "HNSW",
-                "metric_type": "MAX_SIM_IP",
-                "params": {"M": 16, "efConstruction": 256},
-            },
-        ]
-    else:
-        raise ValueError("Unknown collection kind: {0}".format(kind))
+    fields = common_fields + [
+        {"name": "cls_embedding", "data_type": "FLOAT_VECTOR", "params": {"dim": config.DINO_DIMENSION}},
+        {
+            "name": "patches",
+            "data_type": "ARRAY",
+            "element_type": "STRUCT",
+            "max_capacity": 256,
+            "struct_fields": [
+                {"name": "patch_idx", "data_type": "INT16"},
+                {"name": "patch_x", "data_type": "INT8"},
+                {"name": "patch_y", "data_type": "INT8"},
+                {"name": "embedding", "data_type": "FLOAT_VECTOR", "params": {"dim": config.DINO_DIMENSION}},
+            ],
+        },
+    ]
+    indexes = [
+        {
+            "field_name": "cls_embedding",
+            "index_name": "cls_idx",
+            "index_type": "HNSW",
+            "metric_type": "IP",
+            "params": {"M": 16, "efConstruction": 256},
+        },
+        {
+            "field_name": "patches[embedding]",
+            "index_name": "patch_emb_idx",
+            "index_type": "HNSW",
+            "metric_type": "MAX_SIM_IP",
+            "params": {"M": 16, "efConstruction": 256},
+        },
+    ]
 
     return {
         "collection_name": collection_name,
@@ -173,17 +165,17 @@ def collection_schema(collection_name, kind):
         "enable_dynamic_field": True,
         "fields": fields,
         "indexes": indexes,
-        "extra": {"created_by": "SceneAssembly", "kind": kind},
+        "extra": {"created_by": "SceneAssembly", "kind": "dinov3_assets"},
     }
 
 
-def reset_collection(collection_name, kind):
+def reset_collection(collection_name):
     status, _ = request_json("DELETE", "/milvus/collections/{0}".format(collection_name), allow_404=True)
     if status == 404:
         unreal.log("[SceneAssembly] Collection not found, will create: {0}".format(collection_name))
     else:
         unreal.log("[SceneAssembly] Dropped collection: {0}".format(collection_name))
-    _, envelope = request_json("POST", "/milvus/collections", collection_schema(collection_name, kind))
+    _, envelope = request_json("POST", "/milvus/collections", collection_schema(collection_name))
     unwrap_data(envelope)
     unreal.log("[SceneAssembly] Created collection: {0}".format(collection_name))
 
@@ -370,24 +362,17 @@ def record_failed_rows(failed, collection_name, rows, exc):
         )
 
 
-def flush_batches(cls_rows, patch_rows, force=False, failed=None):
-    while cls_rows and (force or len(cls_rows) >= config.CLS_BATCH_SIZE):
-        batch = cls_rows[: config.CLS_BATCH_SIZE]
+def flush_batches(rows, force=False, failed=None):
+    while rows and (force or len(rows) >= config.INGEST_BATCH_SIZE):
+        batch = rows[: config.INGEST_BATCH_SIZE]
         try:
-            ingest_batch(config.CLS_COLLECTION, batch)
+            ingest_batch(config.COLLECTION, batch)
         except Exception as exc:
-            record_failed_rows(failed, config.CLS_COLLECTION, batch, exc)
-        del cls_rows[: len(batch)]
-    while patch_rows and (force or len(patch_rows) >= config.PATCH_BATCH_SIZE):
-        batch = patch_rows[: config.PATCH_BATCH_SIZE]
-        try:
-            ingest_batch(config.PATCH_COLLECTION, batch)
-        except Exception as exc:
-            record_failed_rows(failed, config.PATCH_COLLECTION, batch, exc)
-        del patch_rows[: len(batch)]
+            record_failed_rows(failed, config.COLLECTION, batch, exc)
+        del rows[: len(batch)]
 
 
-def build_rows(asset_id, asset_name, asset_path, thumbnail_url, public_path, embed_data):
+def build_row(asset_id, asset_name, asset_path, thumbnail_url, public_path, embed_data):
     fields = {
         "thumbnail_url": thumbnail_url,
         "asset_name": asset_name,
@@ -395,32 +380,26 @@ def build_rows(asset_id, asset_name, asset_path, thumbnail_url, public_path, emb
         "asset_type": "StaticMesh",
         "public_path": public_path,
     }
-    cls_row = {
+    return {
         "project_name": config.PROJECT_NAME,
         "asset_id": asset_id,
         "cls_embedding": embed_data["cls_embedding"],
-        "fields": fields,
-    }
-    patch_row = {
-        "project_name": config.PROJECT_NAME,
-        "asset_id": asset_id,
         "patches": build_patch_structs(embed_data),
         "fields": fields,
     }
-    return cls_row, patch_row
 
 
-def add_rows_from_embed(item, embed_data, cls_rows, patch_rows):
-    cls_row, patch_row = build_rows(
-        item["asset_id"],
-        item["asset_name"],
-        item["asset_path"],
-        item["thumbnail_url"],
-        item["public_path"],
-        embed_data,
+def add_row_from_embed(item, embed_data, rows):
+    rows.append(
+        build_row(
+            item["asset_id"],
+            item["asset_name"],
+            item["asset_path"],
+            item["thumbnail_url"],
+            item["public_path"],
+            embed_data,
+        )
     )
-    cls_rows.append(cls_row)
-    patch_rows.append(patch_row)
 
 
 def record_failed_asset(failed, asset_path, exc):
@@ -429,7 +408,7 @@ def record_failed_asset(failed, asset_path, exc):
     unreal.log_error(traceback.format_exc())
 
 
-def flush_pending_embeddings(pending, cls_rows, patch_rows, failed):
+def flush_pending_embeddings(pending, rows, failed):
     if not pending:
         return 0
 
@@ -444,7 +423,7 @@ def flush_pending_embeddings(pending, cls_rows, patch_rows, failed):
         for item in pending:
             try:
                 embed_data = embed_thumbnail(item["out_path"])
-                add_rows_from_embed(item, embed_data, cls_rows, patch_rows)
+                add_row_from_embed(item, embed_data, rows)
                 succeeded += 1
             except Exception as item_exc:
                 record_failed_asset(failed, item["asset_path"], item_exc)
@@ -453,7 +432,7 @@ def flush_pending_embeddings(pending, cls_rows, patch_rows, failed):
 
     for item, embed_data in zip(pending, embed_results):
         try:
-            add_rows_from_embed(item, embed_data, cls_rows, patch_rows)
+            add_row_from_embed(item, embed_data, rows)
             succeeded += 1
         except Exception as exc:
             record_failed_asset(failed, item["asset_path"], exc)
@@ -466,15 +445,13 @@ def ingest_static_meshes():
     started_at = time.time()
     auth_self_check()
     dinov3_info()
-    reset_collection(config.CLS_COLLECTION, "cls")
-    reset_collection(config.PATCH_COLLECTION, "patch")
+    reset_collection(config.COLLECTION)
 
     asset_data_list = enumerate_static_mesh_assets()
     total = len(asset_data_list)
     unreal.log("[SceneAssembly] Found {0} StaticMesh assets.".format(total))
 
-    cls_rows = []
-    patch_rows = []
+    rows = []
     pending = []
     succeeded = 0
     failed = []
@@ -501,13 +478,13 @@ def ingest_static_meshes():
             continue
 
         if len(pending) >= config.EMBED_BATCH_SIZE:
-            succeeded += flush_pending_embeddings(pending, cls_rows, patch_rows, failed)
-            flush_batches(cls_rows, patch_rows, failed=failed)
+            succeeded += flush_pending_embeddings(pending, rows, failed)
+            flush_batches(rows, failed=failed)
 
-    succeeded += flush_pending_embeddings(pending, cls_rows, patch_rows, failed)
-    flush_batches(cls_rows, patch_rows, failed=failed)
+    succeeded += flush_pending_embeddings(pending, rows, failed)
+    flush_batches(rows, failed=failed)
 
-    flush_batches(cls_rows, patch_rows, force=True, failed=failed)
+    flush_batches(rows, force=True, failed=failed)
     elapsed = time.time() - started_at
     unreal.log("[SceneAssembly] Finished. total={0}, succeeded={1}, failed={2}, elapsed={3:.1f}s".format(total, succeeded, len(failed), elapsed))
     for item in failed:
@@ -522,7 +499,7 @@ def verify_query(limit=10):
         "limit": limit,
         "offset": 0,
     }
-    _, envelope = request_json("POST", "/milvus/collections/{0}/query_assets".format(config.CLS_COLLECTION), payload)
+    _, envelope = request_json("POST", "/milvus/collections/{0}/query_assets".format(config.COLLECTION), payload)
     data = unwrap_data(envelope)
     unreal.log("[SceneAssembly] Query verification: {0}".format(json.dumps(data, ensure_ascii=False)[:2000]))
     return data

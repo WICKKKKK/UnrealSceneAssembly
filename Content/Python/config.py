@@ -5,8 +5,7 @@ API_KEY = "jade_ak_pTKyjjFlDlHt2Z1eQubm6tAttiPL0Rzn"
 
 # 项目与 Milvus 集合名
 PROJECT_NAME = "blockout"
-CLS_COLLECTION = "dinov3_assets_cls_test"
-PATCH_COLLECTION = "dinov3_assets_patch_test"
+COLLECTION = "dinov3_assets_test"
 
 # 缩略图本地输出目录与对外访问路径
 THUMB_DIR = r"e:\JadeProjects\JadeServices\public\thumbnails\blockout"
@@ -22,8 +21,7 @@ ASSET_PATH_PREFIXES = ("/Game",)
 
 # 批处理大小
 EMBED_BATCH_SIZE = 64
-CLS_BATCH_SIZE = 100
-PATCH_BATCH_SIZE = 4
+INGEST_BATCH_SIZE = 4
 
 # 超时与重试
 HTTP_TIMEOUT_SECONDS = 120.0
