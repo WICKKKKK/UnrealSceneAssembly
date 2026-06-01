@@ -33,6 +33,8 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+Content/Python/mcp_server/site-packages/
+Content/Python/mcp_server/*.egg-info/
 
 # OS files
 Thumbs.db
