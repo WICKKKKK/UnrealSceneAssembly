@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import os
 import site
+import json
+import socket
 import sys
 from typing import Any
+import urllib.error
+import urllib.request
 
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+CONTENT_PYTHON_DIR = os.path.dirname(SERVER_DIR)
 SITE_PACKAGES_DIR = os.path.join(SERVER_DIR, "site-packages")
 if os.path.isdir(SITE_PACKAGES_DIR):
     # Process .pth files from --target installs; pywin32 needs this on Windows.
     site.addsitedir(SITE_PACKAGES_DIR)
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
+if CONTENT_PYTHON_DIR not in sys.path:
+    sys.path.insert(0, CONTENT_PYTHON_DIR)
 
 from bridge_client import BridgeError, bridge_settings, call_bridge
 
@@ -47,6 +54,98 @@ def _get_int(name: str, default: int) -> int:
 def _normalize_path(path: str) -> str:
     path = path.strip() or "/mcp"
     return path if path.startswith("/") else f"/{path}"
+
+
+def _clip_config() -> dict[str, Any]:
+    try:
+        import config as scene_config
+    except Exception as exc:
+        raise RuntimeError(f"Failed to import Content/Python/config.py: {exc}") from exc
+
+    api_key = str(getattr(scene_config, "API_KEY", "") or "").strip()
+    if not api_key:
+        raise RuntimeError("API_KEY is not configured in Content/Python/config.py")
+
+    return {
+        "base_url": str(getattr(scene_config, "BASE_URL", "http://localhost:8000") or "").rstrip("/"),
+        "api_prefix": str(getattr(scene_config, "API_PREFIX", "/api/v1") or "").rstrip("/"),
+        "api_key": api_key,
+        "collection": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
+        "project_name": str(getattr(scene_config, "PROJECT_NAME", "") or ""),
+        "timeout": float(getattr(scene_config, "HTTP_TIMEOUT_SECONDS", 120.0) or 120.0),
+    }
+
+
+def _clip_api_url(path: str, cfg: dict[str, Any]) -> str:
+    path = path if path.startswith("/") else f"/{path}"
+    return f"{cfg['base_url']}{cfg['api_prefix']}{path}"
+
+
+def _clip_request_json(path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+    cfg = _clip_config()
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        _clip_api_url(path, cfg),
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or cfg["timeout"]) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"JadeServices HTTP {exc.code}: {detail or exc.reason}") from exc
+    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+        raise RuntimeError(f"Failed to reach JadeServices: {exc}") from exc
+
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"JadeServices returned invalid JSON: {exc}") from exc
+
+    code = envelope.get("code")
+    if code not in (None, 0, 200):
+        message = envelope.get("message") or "JadeServices returned an error"
+        raise RuntimeError(f"JadeServices code {code}: {message}")
+
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("JadeServices response did not include a data object")
+    return data
+
+
+def _clip_error(exc: Exception) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "error",
+        "message": str(exc),
+    }
+
+
+def _bounded_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
+
+
+def _build_clip_filters(
+    project_names: list[str] | None = None,
+    asset_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cfg = _clip_config()
+    merged: dict[str, Any] = dict(filters or {})
+    if project_names is None and "project_names" not in merged and cfg["project_name"]:
+        merged["project_names"] = [cfg["project_name"]]
+    elif project_names is not None:
+        merged["project_names"] = project_names
+    if asset_types is not None:
+        merged["asset_types"] = asset_types
+    return {key: value for key, value in merged.items() if value not in (None, [], {})}
 
 
 def _server_config() -> dict[str, Any]:
@@ -346,6 +445,63 @@ def unreal_new_level(path: str, save_current: bool = False) -> dict[str, Any]:
 def unreal_load_level(path: str, save_current: bool = False) -> dict[str, Any]:
     """Load a level by Unreal content path such as /Game/Maps/TestMap."""
     return _call_unreal("load_level", {"path": path, "save_current": save_current})
+
+
+@mcp.tool()
+def unreal_search_assets_by_text(
+    text: str,
+    limit: int = 10,
+    offset: int = 0,
+    project_names: list[str] | None = None,
+    asset_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+    output_fields: list[str] | None = None,
+    score_threshold: float = 0.0,
+    ef: int = 64,
+    collection: str | None = None,
+) -> dict[str, Any]:
+    """Search static mesh assets by natural-language CLIP text query through JadeServices."""
+    try:
+        query = str(text or "").strip()
+        if not query:
+            raise ValueError("text must not be empty")
+
+        cfg = _clip_config()
+        collection_name = (collection or cfg["collection"]).strip()
+        if not collection_name:
+            raise ValueError("collection must not be empty")
+
+        request_filters = _build_clip_filters(project_names=project_names, asset_types=asset_types, filters=filters)
+        payload: dict[str, Any] = {
+            "text": query,
+            "limit": _bounded_int(limit, 1, 100),
+            "offset": max(0, int(offset)),
+            "search_params": {
+                "mode": "hnsw",
+                "ef": _bounded_int(ef, 1, 512),
+                "score_threshold": float(score_threshold),
+            },
+        }
+        if request_filters:
+            payload["filters"] = request_filters
+        if output_fields is not None:
+            payload["output_fields"] = output_fields
+
+        data = _clip_request_json(f"/clip/collections/{collection_name}/search/single_text", payload, cfg["timeout"])
+        hits = data.get("hits") or []
+        return {
+            "ok": True,
+            "status": "success",
+            "collection_name": data.get("collection_name", collection_name),
+            "model": data.get("model"),
+            "query_vector_dim": data.get("query_vector_dim"),
+            "search_time_ms": data.get("search_time_ms"),
+            "count": len(hits),
+            "hits": hits,
+            "filters": request_filters,
+        }
+    except Exception as exc:
+        return _clip_error(exc)
 
 
 def _call_unreal(command: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
