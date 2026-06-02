@@ -10,6 +10,8 @@ from typing import Any
 
 import unreal
 
+from .scene_handlers import SCENE_HANDLERS
+
 
 class CommandError(RuntimeError):
     """Raised when a bridge command cannot be handled."""
@@ -19,10 +21,11 @@ def handle_command(command: str, params: dict[str, Any] | None = None, context: 
     params = params or {}
     context = context or {}
 
-    handlers = {
+    handlers: dict[str, Any] = {
         "ping": _handle_ping,
         "get_project_info": _handle_get_project_info,
     }
+    handlers.update(SCENE_HANDLERS)
 
     handler = handlers.get(command)
     if handler is None:

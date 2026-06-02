@@ -6,21 +6,24 @@ API_KEY = "jade_ak_pTKyjjFlDlHt2Z1eQubm6tAttiPL0Rzn"
 # 项目与 Milvus 集合名
 PROJECT_NAME = "blockout"
 COLLECTION = "dinov3_assets_test"
+COLLECTION_CLIP = "clip_assets_test"
 
 # 缩略图本地输出目录与对外访问路径
 THUMB_DIR = r"e:\JadeProjects\JadeServices\public\thumbnails\blockout"
 THUMB_REL = "thumbnails/blockout"
 THUMB_URL_PREFIX = "/public/thumbnails/blockout"
 
-# 缩略图与 DINOv3 维度
+# 缩略图与模型维度
 THUMB_RESOLUTION = 512
 DINO_DIMENSION = 1280
+CLIP_DIMENSION = 768
 
 # 仅处理这些资源路径前缀下的资产
 ASSET_PATH_PREFIXES = ("/Game",)
 
 # 批处理大小
 EMBED_BATCH_SIZE = 64
+CLIP_EMBED_BATCH_SIZE = 16
 INGEST_BATCH_SIZE = 4
 
 # 超时与重试

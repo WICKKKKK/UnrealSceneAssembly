@@ -2,6 +2,8 @@
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "Misc/DefaultValueHelper.h"
 #include "Misc/MessageDialog.h"
 #include "Serialization/JsonReader.h"
@@ -13,9 +15,10 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -23,6 +26,12 @@
 
 namespace
 {
+static const FLinearColor ReadyColor(0.18f, 0.72f, 0.38f, 1.0f);
+static const FLinearColor RunningColor(0.13f, 0.56f, 0.95f, 1.0f);
+static const FLinearColor WarningColor(1.0f, 0.64f, 0.16f, 1.0f);
+static const FLinearColor ErrorColor(0.92f, 0.24f, 0.24f, 1.0f);
+static const FLinearColor MutedColor(0.58f, 0.58f, 0.58f, 1.0f);
+
 FString GetStringField(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, const FString& DefaultValue = FString())
 {
 	FString Value;
@@ -46,6 +55,21 @@ TSharedPtr<FJsonObject> GetObjectField(const TSharedPtr<FJsonObject>& Object, co
 	const TSharedPtr<FJsonObject>* Child = nullptr;
 	return Object.IsValid() && Object->TryGetObjectField(FieldName, Child) && Child != nullptr ? *Child : nullptr;
 }
+
+FText PortToText(int32 Port)
+{
+	return FText::FromString(FString::FromInt(Port));
+}
+
+TSharedRef<SWidget> MakeCard(const TSharedRef<SWidget>& Content)
+{
+	return SNew(SBorder)
+		.Padding(16.0f)
+		.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
+		[
+			Content
+		];
+}
 }
 
 void SMCPControlPanel::Construct(const FArguments& InArgs)
@@ -53,7 +77,7 @@ void SMCPControlPanel::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.Padding(16.0f)
+		.Padding(18.0f)
 		.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
 		[
 			SNew(SScrollBox)
@@ -63,189 +87,301 @@ void SMCPControlPanel::Construct(const FArguments& InArgs)
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("Title", "Scene Assembly MCP"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 20))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 4.0f, 0.0f, 12.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("Subtitle", "Manage the local MCP bridge and FastMCP server for the currently open Unreal project."))
-					.AutoWrapText(true)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 0.0f, 0.0f, 12.0f)
-				[
-					SNew(SBorder)
-					.Padding(10.0f)
-					.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.VAlign(VAlign_Center)
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
 						.AutoHeight()
 						[
 							SNew(STextBlock)
-							.Text(this, &SMCPControlPanel::GetStatusText)
-							.AutoWrapText(true)
+							.Text(LOCTEXT("Title", "Scene Assembly MCP"))
+							.Font(FCoreStyle::GetDefaultFontStyle("Bold", 22))
 						]
 						+ SVerticalBox::Slot()
 						.AutoHeight()
-						.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+						.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 						[
 							SNew(STextBlock)
-							.Text(this, &SMCPControlPanel::GetAgentUrlText)
-							.AutoWrapText(true)
+							.Text(LOCTEXT("Subtitle", "Connect MCP agents to the current Unreal project."))
+							.ColorAndOpacity(FSlateColor(MutedColor))
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SBorder)
+						.Padding(FMargin(12.0f, 6.0f))
+						.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
+						.BorderBackgroundColor(FSlateColor(FLinearColor(0.16f, 0.16f, 0.16f, 1.0f)))
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+							[
+								SNew(STextBlock)
+								.Text(FText::FromString(TEXT("\x2022")))
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+								.ColorAndOpacity(this, &SMCPControlPanel::GetStatusPillColor)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Text(this, &SMCPControlPanel::GetStatusPillText)
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+								.ColorAndOpacity(FSlateColor(FLinearColor(0.92f, 0.92f, 0.92f, 1.0f)))
+							]
 						]
 					]
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+				.Padding(0.0f, 18.0f, 0.0f, 12.0f)
 				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("EnvironmentHeader", "Python Environment"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 14))
+					MakeCard(
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("ServerHeader", "MCP Server"))
+									.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+								]
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+								[
+									SNew(STextBlock)
+									.Text(this, &SMCPControlPanel::GetStatusSummaryText)
+									.ColorAndOpacity(FSlateColor(MutedColor))
+									.AutoWrapText(true)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SBox)
+								.MinDesiredWidth(150.0f)
+								.MinDesiredHeight(36.0f)
+								[
+								SNew(SButton)
+								.Text(this, &SMCPControlPanel::GetPrimaryButtonText)
+								.TextStyle(FAppStyle::Get(), "NormalText")
+								.HAlign(HAlign_Center)
+								.VAlign(VAlign_Center)
+								.ForegroundColor(FSlateColor(FLinearColor::White))
+									.ButtonColorAndOpacity(this, &SMCPControlPanel::GetPrimaryButtonColor)
+									.ToolTipText(this, &SMCPControlPanel::GetPrimaryButtonTooltip)
+									.IsEnabled(this, &SMCPControlPanel::CanToggleServer)
+									.OnClicked(this, &SMCPControlPanel::OnPrimaryButtonClicked)
+								]
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(0.0f, 14.0f, 0.0f, 14.0f)
+						[
+							SNew(SSeparator)
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("EndpointLabel", "Agent endpoint"))
+									.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+									.ColorAndOpacity(FSlateColor(MutedColor))
+								]
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								.Padding(0.0f, 3.0f, 0.0f, 0.0f)
+								[
+									SNew(STextBlock)
+									.Text(this, &SMCPControlPanel::GetEndpointUrlText)
+									.Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+									.AutoWrapText(true)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							.Padding(12.0f, 0.0f, 0.0f, 0.0f)
+							[
+								SNew(SButton)
+								.Text(LOCTEXT("CopyUrl", "Copy"))
+								.OnClicked(this, &SMCPControlPanel::OnCopyUrlClicked)
+							]
+						]
+					)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 12.0f)
+				[
+					MakeCard(
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("SetupHeader", "Setup"))
+							.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(0.0f, 14.0f, 0.0f, 0.0f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("DepsLabel", "Python runtime"))
+									.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+								]
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								.Padding(0.0f, 3.0f, 0.0f, 0.0f)
+								[
+									SNew(STextBlock)
+									.Text(this, &SMCPControlPanel::GetDependencyStatusText)
+									.ColorAndOpacity(this, &SMCPControlPanel::GetDependencyColor)
+									.AutoWrapText(true)
+								]
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(SButton)
+								.Text(this, &SMCPControlPanel::GetInstallButtonText)
+								.Visibility(this, &SMCPControlPanel::GetInstallButtonVisibility)
+								.IsEnabled(this, &SMCPControlPanel::CanInstallDependencies)
+								.OnClicked(this, &SMCPControlPanel::OnInstallDependenciesClicked)
+							]
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						.Padding(0.0f, 14.0f, 0.0f, 14.0f)
+						[
+							SNew(SSeparator)
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							[
+								SNew(STextBlock)
+								.Text(LOCTEXT("PortLabel", "HTTP port"))
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+							]
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(0.0f, 0.0f, 10.0f, 0.0f)
+								[
+									SAssignNew(PortTextBox, SEditableTextBox)
+									.MinDesiredWidth(120.0f)
+									.Text(PortToText(ConfigPort))
+									.IsReadOnly_Lambda([this]() { return bRunning; })
+									.OnTextChanged(this, &SMCPControlPanel::OnPortTextChanged)
+									.OnTextCommitted(this, &SMCPControlPanel::OnPortTextCommitted)
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+								[
+									SNew(SBorder)
+									.Padding(FMargin(10.0f, 4.0f))
+									.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
+									.BorderBackgroundColor(this, &SMCPControlPanel::GetPortBadgeColor)
+									[
+										SNew(STextBlock)
+										.Text(this, &SMCPControlPanel::GetPortBadgeText)
+										.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+									]
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("Recheck", "Recheck"))
+									.IsEnabled_Lambda([this]() { return !bRunning && !bInstallRunning; })
+									.OnClicked(this, &SMCPControlPanel::OnCheckPortClicked)
+								]
+							]
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							.Padding(0.0f, 6.0f, 0.0f, 0.0f)
+							[
+								SNew(STextBlock)
+								.Text(this, &SMCPControlPanel::GetPortHelpText)
+								.ColorAndOpacity(FSlateColor(MutedColor))
+								.AutoWrapText(true)
+							]
+						]
+					)
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					SNew(STextBlock)
-					.Text(this, &SMCPControlPanel::GetEnvironmentText)
-					.AutoWrapText(true)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 8.0f, 0.0f, 16.0f)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					SNew(SExpandableArea)
+					.InitiallyCollapsed(true)
+					.HeaderContent()
 					[
-						SNew(SButton)
-						.Text(LOCTEXT("CheckEnv", "Check Environment"))
-						.OnClicked(this, &SMCPControlPanel::OnCheckEnvironmentClicked)
+						SNew(STextBlock)
+						.Text(LOCTEXT("RuntimeDetails", "Runtime details"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
 					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
+					.BodyContent()
 					[
-						SNew(SButton)
-						.Text(LOCTEXT("InstallDeps", "Install Dependencies"))
-						.IsEnabled(this, &SMCPControlPanel::CanInstallDependencies)
-						.OnClicked(this, &SMCPControlPanel::OnInstallDependenciesClicked)
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SSeparator)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 16.0f, 0.0f, 8.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("PortHeader", "MCP HTTP Port"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 14))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
-					[
-						SAssignNew(PortTextBox, SEditableTextBox)
-						.MinDesiredWidth(120.0f)
-						.Text(FText::FromString(FString::FromInt(ConfigPort)))
-						.IsReadOnly_Lambda([this]() { return bRunning; })
-						.OnTextChanged(this, &SMCPControlPanel::OnPortTextChanged)
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("CheckPort", "Check Port"))
-						.IsEnabled_Lambda([this]() { return !bRunning && !bInstallRunning; })
-						.OnClicked(this, &SMCPControlPanel::OnCheckPortClicked)
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 8.0f, 0.0f, 16.0f)
-				[
-					SNew(STextBlock)
-					.Text(this, &SMCPControlPanel::GetPortStatusText)
-					.AutoWrapText(true)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SSeparator)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 16.0f, 0.0f, 8.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("ControlsHeader", "Controls"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 14))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("Start", "Start MCP"))
-						.IsEnabled(this, &SMCPControlPanel::CanStart)
-						.OnClicked(this, &SMCPControlPanel::OnStartClicked)
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("Stop", "Stop MCP"))
-						.IsEnabled(this, &SMCPControlPanel::CanStop)
-						.OnClicked(this, &SMCPControlPanel::OnStopClicked)
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("Refresh", "Refresh"))
-						.OnClicked(this, &SMCPControlPanel::OnRefreshClicked)
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 12.0f, 0.0f, 6.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("InstallLogHeader", "Install / Runtime Log"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 14))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SBox)
-					.MinDesiredWidth(600.0f)
-					.MinDesiredHeight(160.0f)
-					[
-						SNew(SMultiLineEditableTextBox)
-						.IsReadOnly(true)
-						.AutoWrapText(true)
-						.Text(this, &SMCPControlPanel::GetInstallLogText)
+						SNew(SBox)
+						.MinDesiredHeight(150.0f)
+						[
+							SNew(SMultiLineEditableTextBox)
+							.IsReadOnly(true)
+							.AutoWrapText(true)
+							.Text(this, &SMCPControlPanel::GetInstallLogText)
+						]
 					]
 				]
 			]
@@ -305,7 +441,8 @@ void SMCPControlPanel::ApplyResponse(const TSharedPtr<FJsonObject>& Response)
 		EndpointUrl = GetStringField(Config, TEXT("mcp_url"), EndpointUrl);
 		if (!bUserEditedPort && PortTextBox.IsValid())
 		{
-			PortTextBox->SetText(FText::FromString(FString::FromInt(ConfigPort)));
+			TGuardValue<bool> Guard(bUpdatingPortText, true);
+			PortTextBox->SetText(PortToText(ConfigPort));
 		}
 	}
 
@@ -313,12 +450,12 @@ void SMCPControlPanel::ApplyResponse(const TSharedPtr<FJsonObject>& Response)
 	if (Dependencies.IsValid())
 	{
 		bDependenciesInstalled = GetBoolField(Dependencies, TEXT("installed"), bDependenciesInstalled);
-		EnvironmentMessage = bDependenciesInstalled ? TEXT("Dependencies are installed.") : TEXT("Dependencies are missing. Use Install Dependencies before starting MCP.");
+		EnvironmentMessage = bDependenciesInstalled ? TEXT("Ready") : TEXT("Missing packages");
 	}
 	else if (Response->HasField(TEXT("installed")))
 	{
 		bDependenciesInstalled = GetBoolField(Response, TEXT("installed"), bDependenciesInstalled);
-		EnvironmentMessage = bDependenciesInstalled ? TEXT("Dependencies are installed.") : TEXT("Dependencies are missing. Use Install Dependencies before starting MCP.");
+		EnvironmentMessage = bDependenciesInstalled ? TEXT("Ready") : TEXT("Missing packages");
 	}
 
 	const TSharedPtr<FJsonObject> Install = GetObjectField(Response, TEXT("install"));
@@ -339,14 +476,14 @@ void SMCPControlPanel::ApplyResponse(const TSharedPtr<FJsonObject>& Response)
 				}
 			}
 		}
-		InstallLog = InstallMessage;
+		InstallLog = InstallMessage.IsEmpty() ? TEXT("No runtime messages.") : InstallMessage;
 		if (Lines.Num() > 0)
 		{
 			InstallLog += TEXT("\n") + FString::Join(Lines, TEXT("\n"));
 		}
 	}
 
-	ApplyPortResponse(Response, false);
+	ApplyPortResponse(Response, true);
 }
 
 void SMCPControlPanel::ApplyPortResponse(const TSharedPtr<FJsonObject>& Response, bool bForceApply)
@@ -366,13 +503,13 @@ void SMCPControlPanel::ApplyPortResponse(const TSharedPtr<FJsonObject>& Response
 
 	LastCheckedPort = ResponsePort;
 	bPortAvailable = GetBoolField(Port, TEXT("available"), bPortAvailable);
-	PortMessage = GetStringField(Port, TEXT("message"), bPortAvailable ? TEXT("Port is available.") : TEXT("Port is not available."));
+	PortMessage = GetStringField(Port, TEXT("message"), bPortAvailable ? TEXT("Available") : TEXT("Unavailable"));
 }
 
 void SMCPControlPanel::AppendMessage(const FString& Message)
 {
 	LastMessage = Message;
-	if (InstallLog.IsEmpty())
+	if (InstallLog.IsEmpty() || InstallLog == TEXT("No runtime messages."))
 	{
 		InstallLog = Message;
 	}
@@ -382,20 +519,32 @@ void SMCPControlPanel::AppendMessage(const FString& Message)
 	}
 }
 
+bool SMCPControlPanel::CheckCurrentPort(bool bAppendToLog)
+{
+	const int32 Port = GetPortValue();
+	TSharedPtr<FJsonObject> Response;
+	if (!CallController(FString::Printf(TEXT("check_port_json(%d)"), Port), Response))
+	{
+		return false;
+	}
+
+	ApplyPortResponse(Response, true);
+	if (bAppendToLog)
+	{
+		AppendMessage(FString::Printf(TEXT("Port %d: %s"), Port, *PortMessage));
+	}
+	return bPortAvailable;
+}
+
+FString SMCPControlPanel::GetCurrentEndpointUrl() const
+{
+	const int32 DisplayPort = bRunning ? ConfigPort : GetPortValue();
+	return bRunning ? EndpointUrl : FString::Printf(TEXT("http://127.0.0.1:%d/mcp"), DisplayPort);
+}
+
 FReply SMCPControlPanel::OnRefreshClicked()
 {
 	RefreshStatus();
-	return FReply::Handled();
-}
-
-FReply SMCPControlPanel::OnCheckEnvironmentClicked()
-{
-	TSharedPtr<FJsonObject> Response;
-	if (CallController(TEXT("check_environment_json()"), Response))
-	{
-		ApplyResponse(Response);
-		AppendMessage(EnvironmentMessage);
-	}
 	return FReply::Handled();
 }
 
@@ -417,20 +566,29 @@ FReply SMCPControlPanel::OnInstallDependenciesClicked()
 
 FReply SMCPControlPanel::OnCheckPortClicked()
 {
-	const int32 Port = GetPortValue();
-	TSharedPtr<FJsonObject> Response;
-	if (CallController(FString::Printf(TEXT("check_port_json(%d)"), Port), Response))
-	{
-		ApplyPortResponse(Response, true);
-		AppendMessage(FString::Printf(TEXT("Port %d: %s"), Port, *PortMessage));
-	}
+	CheckCurrentPort(true);
 	return FReply::Handled();
 }
 
-FReply SMCPControlPanel::OnStartClicked()
+FReply SMCPControlPanel::OnPrimaryButtonClicked()
 {
-	const int32 Port = GetPortValue();
 	TSharedPtr<FJsonObject> Response;
+	if (bRunning)
+	{
+		if (CallController(TEXT("stop_json()"), Response))
+		{
+			ApplyResponse(Response);
+			RefreshStatus();
+		}
+		return FReply::Handled();
+	}
+
+	const int32 Port = GetPortValue();
+	if (LastCheckedPort != Port || !bPortAvailable)
+	{
+		CheckCurrentPort(false);
+	}
+
 	if (CallController(FString::Printf(TEXT("start_json(%d)"), Port), Response))
 	{
 		bUserEditedPort = false;
@@ -440,31 +598,45 @@ FReply SMCPControlPanel::OnStartClicked()
 	return FReply::Handled();
 }
 
-FReply SMCPControlPanel::OnStopClicked()
+FReply SMCPControlPanel::OnCopyUrlClicked()
 {
-	TSharedPtr<FJsonObject> Response;
-	if (CallController(TEXT("stop_json()"), Response))
-	{
-		ApplyResponse(Response);
-		RefreshStatus();
-	}
+	FPlatformApplicationMisc::ClipboardCopy(*GetCurrentEndpointUrl());
+	AppendMessage(TEXT("Agent endpoint copied to clipboard. Remember to keep .opencode/opencode.json in sync if you changed the port."));
 	return FReply::Handled();
 }
 
 void SMCPControlPanel::OnPortTextChanged(const FText& NewText)
 {
+	if (bUpdatingPortText)
+	{
+		return;
+	}
+
 	bUserEditedPort = true;
 	const int32 Port = GetPortValue();
 	if (Port != LastCheckedPort)
 	{
 		bPortAvailable = false;
-		PortMessage = TEXT("Click Check Port before starting MCP.");
+		PortMessage = (Port >= 1 && Port <= 65535) ? TEXT("Press Enter or click Recheck") : TEXT("Enter a port from 1 to 65535");
+	}
+}
+
+void SMCPControlPanel::OnPortTextCommitted(const FText& NewText, ETextCommit::Type CommitType)
+{
+	if (!bRunning && !bInstallRunning)
+	{
+		CheckCurrentPort(false);
 	}
 }
 
 bool SMCPControlPanel::CanInstallDependencies() const
 {
 	return !bDependenciesInstalled && !bInstallRunning && !bRunning;
+}
+
+bool SMCPControlPanel::CanToggleServer() const
+{
+	return bRunning || CanStart();
 }
 
 bool SMCPControlPanel::CanStart() const
@@ -493,21 +665,142 @@ int32 SMCPControlPanel::GetPortValue() const
 	return Port;
 }
 
-FText SMCPControlPanel::GetStatusText() const
-{
-	return FText::FromString(FString::Printf(TEXT("Status: %s\n%s"), bRunning ? TEXT("Running") : TEXT("Stopped"), *LastMessage));
-}
-
-FText SMCPControlPanel::GetEnvironmentText() const
-{
-	return FText::FromString(FString::Printf(TEXT("%s%s"), bInstallRunning ? TEXT("Installing dependencies...\n") : TEXT(""), *EnvironmentMessage));
-}
-
-FText SMCPControlPanel::GetPortStatusText() const
+FText SMCPControlPanel::GetStatusPillText() const
 {
 	if (bRunning)
 	{
-		return FText::FromString(FString::Printf(TEXT("Port %d is in use by the running MCP server."), ConfigPort));
+		return LOCTEXT("RunningPill", "RUNNING");
+	}
+	if (bInstallRunning)
+	{
+		return LOCTEXT("InstallingPill", "INSTALLING");
+	}
+	return LOCTEXT("StoppedPill", "STOPPED");
+}
+
+FSlateColor SMCPControlPanel::GetStatusPillColor() const
+{
+	if (bRunning)
+	{
+		return FSlateColor(RunningColor);
+	}
+	if (bInstallRunning)
+	{
+		return FSlateColor(WarningColor);
+	}
+	return FSlateColor(MutedColor);
+}
+
+FText SMCPControlPanel::GetStatusSummaryText() const
+{
+	if (bRunning)
+	{
+		return FText::FromString(FString::Printf(TEXT("Serving local MCP tools on port %d."), ConfigPort));
+	}
+	if (!bDependenciesInstalled)
+	{
+		return LOCTEXT("InstallNeededSummary", "Install the Python runtime before starting MCP.");
+	}
+	if (!bPortAvailable)
+	{
+		return FText::FromString(FString::Printf(TEXT("Port %d needs attention before startup."), GetPortValue()));
+	}
+	return FText::GetEmpty();
+}
+
+FText SMCPControlPanel::GetPrimaryButtonText() const
+{
+	return bRunning ? LOCTEXT("StopMCP", "Stop MCP") : LOCTEXT("StartMCP", "Start MCP");
+}
+
+FText SMCPControlPanel::GetPrimaryButtonTooltip() const
+{
+	if (bRunning)
+	{
+		return LOCTEXT("StopTooltip", "Stop the bridge and external MCP server process.");
+	}
+	if (!bDependenciesInstalled)
+	{
+		return LOCTEXT("StartNeedsDeps", "Install the Python runtime first.");
+	}
+	if (!bPortAvailable)
+	{
+		return LOCTEXT("StartNeedsPort", "Choose an available port first.");
+	}
+	return LOCTEXT("StartTooltip", "Start the bridge and external MCP server process.");
+}
+
+FSlateColor SMCPControlPanel::GetPrimaryButtonColor() const
+{
+	return FSlateColor(bRunning ? ErrorColor : ReadyColor);
+}
+
+FText SMCPControlPanel::GetEndpointUrlText() const
+{
+	return FText::FromString(GetCurrentEndpointUrl());
+}
+
+FText SMCPControlPanel::GetDependencyStatusText() const
+{
+	if (bInstallRunning)
+	{
+		return LOCTEXT("DependenciesInstalling", "Installing dependencies...");
+	}
+	return bDependenciesInstalled ? LOCTEXT("DependenciesReady", "Ready") : LOCTEXT("DependenciesMissing", "Missing packages");
+}
+
+FSlateColor SMCPControlPanel::GetDependencyColor() const
+{
+	if (bInstallRunning)
+	{
+		return FSlateColor(WarningColor);
+	}
+	return FSlateColor(bDependenciesInstalled ? ReadyColor : ErrorColor);
+}
+
+FText SMCPControlPanel::GetInstallButtonText() const
+{
+	return bInstallRunning ? LOCTEXT("InstallingButton", "Installing...") : LOCTEXT("InstallButton", "Install Runtime");
+}
+
+EVisibility SMCPControlPanel::GetInstallButtonVisibility() const
+{
+	return bDependenciesInstalled ? EVisibility::Collapsed : EVisibility::Visible;
+}
+
+FText SMCPControlPanel::GetPortBadgeText() const
+{
+	if (bRunning)
+	{
+		return LOCTEXT("PortInUse", "IN USE");
+	}
+	const int32 Port = GetPortValue();
+	if (Port < 1 || Port > 65535)
+	{
+		return LOCTEXT("PortInvalid", "INVALID");
+	}
+	return bPortAvailable ? LOCTEXT("PortAvailable", "AVAILABLE") : LOCTEXT("PortBlocked", "CHECK");
+}
+
+FSlateColor SMCPControlPanel::GetPortBadgeColor() const
+{
+	if (bRunning || bPortAvailable)
+	{
+		return FSlateColor(ReadyColor);
+	}
+	const int32 Port = GetPortValue();
+	return FSlateColor((Port >= 1 && Port <= 65535) ? WarningColor : ErrorColor);
+}
+
+FText SMCPControlPanel::GetPortHelpText() const
+{
+	if (bRunning)
+	{
+		return FText::FromString(FString::Printf(TEXT("Port %d is currently used by this MCP server."), ConfigPort));
+	}
+	if (bPortAvailable)
+	{
+		return FText::FromString(FString::Printf(TEXT("Port %d is available. Update .opencode/opencode.json if you change it."), GetPortValue()));
 	}
 	return FText::FromString(FString::Printf(TEXT("Port %d: %s"), GetPortValue(), *PortMessage));
 }
@@ -515,13 +808,6 @@ FText SMCPControlPanel::GetPortStatusText() const
 FText SMCPControlPanel::GetInstallLogText() const
 {
 	return FText::FromString(InstallLog);
-}
-
-FText SMCPControlPanel::GetAgentUrlText() const
-{
-	const int32 DisplayPort = bRunning ? ConfigPort : GetPortValue();
-	const FString Url = bRunning ? EndpointUrl : FString::Printf(TEXT("http://127.0.0.1:%d/mcp"), DisplayPort);
-	return FText::FromString(FString::Printf(TEXT("Agent URL: %s\nIf you change the port here, update .opencode/opencode.json manually to the same URL."), *Url));
 }
 
 #undef LOCTEXT_NAMESPACE

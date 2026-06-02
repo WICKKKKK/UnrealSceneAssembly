@@ -21,12 +21,14 @@ public class UnrealSceneAssembly : ModuleRules
 			"InputCore",
 			"ToolMenus",
 			"LevelEditor",
+			"ApplicationCore",
 			"Projects",
 			"PythonScriptPlugin",
 			"Json",
 			"ImageWrapper",
 			"AssetRegistry",
 			"RenderCore",
+			"RHI",
 		});
 	}
 }
