@@ -1,14 +1,15 @@
 # UnrealSceneAssembly
 
-仅在编辑器下使用的 UE 插件：导出 StaticMesh 的缩略图，并将 DINOv3 向量入库到 Jade AI Services。
+仅在编辑器下使用的 UE 插件：导出 StaticMesh 的缩略图，并将 CLIP / DINOv3 向量入库到 Jade AI Services。
 
 ## 功能说明
 
 - 枚举工程中所有 `StaticMesh` 资产。
 - 通过资产缩略图渲染器导出 PNG 缩略图。
 - 缩略图保存到 `e:\JadeProjects\JadeServices\public\thumbnails\blockout`，文件名为 `<md5(asset_path)>.png`。
-- 使用 `public_path` 调用 `POST /api/v1/dinov3/embed` 接口生成向量。
-- 重建并写入 `dinov3_assets_test` Milvus 集合，集合内同时保存 `cls_embedding` 与 patch embeddings。
+- 支持通过 `mode="all" | "clip" | "dinov3"` 选择入库方式，默认 `all`。
+- 复用缩略图、包围盒与 AI tagging 元数据，分别调用 CLIP / DINOv3 embedding 接口生成向量。
+- 重建并写入 `clip_assets_test` / `dinov3_assets_test` Milvus 集合；DINOv3 集合内同时保存 `cls_embedding` 与 patch embeddings。
 - 提供编辑器内 MCP 管理面板，可检测环境、一键安装依赖、检查端口并启停本地 MCP 服务。
 
 ## MCP Agent 接入
@@ -95,7 +96,7 @@ call_bridge("get_project_info")
 
 ## 手动运行
 
-1. 启动 Jade 后端 `http://localhost:8000`，确保 DINOv3 与 Milvus 服务可用。
+1. 启动 Jade 后端 `http://localhost:8000`，确保 CLIP、DINOv3 与 Milvus 服务可用。
 2. 打开 UE 工程，按提示让 Unreal 重新编译该插件。
 3. 打开 Unreal Python 控制台。
 4. 执行：
@@ -104,7 +105,14 @@ call_bridge("get_project_info")
 import importlib
 import ingest_static_meshes
 importlib.reload(ingest_static_meshes)
-ingest_static_meshes.ingest_static_meshes()
+ingest_static_meshes.ingest_static_meshes(mode="all")
+```
+
+也可以按需只执行某一个 provider：
+
+```python
+ingest_static_meshes.ingest_clip()
+ingest_static_meshes.ingest_dinov3()
 ```
 
 ## 快速校验
@@ -113,13 +121,17 @@ ingest_static_meshes.ingest_static_meshes()
 
 ```python
 ingest_static_meshes.verify_query(10)
+ingest_static_meshes.verify_query("clip", 10)
+ingest_static_meshes.verify_search_text("street prop", 5)
 ```
 
 也可以通过后端接口校验检索：
 
 - `POST /api/v1/milvus/collections/dinov3_assets_test/query_assets`
+- `POST /api/v1/milvus/collections/clip_assets_test/query_assets`
+- `POST /api/v1/clip/collections/clip_assets_test/search/single_text`
 
-`output_fields` 可使用：`thumbnail_url`、`asset_name`、`asset_path`、`asset_type`、`public_path`。
+`output_fields` 可使用：`thumbnail_url`、`asset_name`、`asset_path`、`asset_type`、`public_path`、`bounding_box`、`ai_tags`、`ai_description`。
 
 ## 配置
 
@@ -127,10 +139,10 @@ ingest_static_meshes.verify_query(10)
 
 - `BASE_URL` / `API_PREFIX` / `API_KEY`：后端基础地址与接入凭证。
 - `PROJECT_NAME`：项目名（用作 Milvus 分区键）。
-- `COLLECTION`：Milvus 集合名。
+- `COLLECTION` / `COLLECTION_CLIP`：DINOv3 / CLIP Milvus 集合名。
 - `THUMB_DIR` / `THUMB_REL` / `THUMB_URL_PREFIX`：缩略图本地保存目录与对外访问路径。
 - `THUMB_RESOLUTION`：缩略图边长（像素）。
-- `DINO_DIMENSION`：DINOv3 向量维度。
+- `DINO_DIMENSION` / `CLIP_DIMENSION`：DINOv3 / CLIP 向量维度。
 - `ASSET_PATH_PREFIXES`：仅处理这些路径前缀下的资产，默认 `("/Game",)`。
 - `EMBED_BATCH_SIZE` / `INGEST_BATCH_SIZE`：批处理大小。
 - `HTTP_TIMEOUT_SECONDS` / `EMBED_BATCH_TIMEOUT_SECONDS` / `INGEST_TIMEOUT_SECONDS`：超时时间。
@@ -138,7 +150,7 @@ ingest_static_meshes.verify_query(10)
 
 ## 注意事项
 
-- 每次运行都会先删除并重建配置中的集合，删除时返回 `404` 视为成功。
+- 每次运行都会先删除并重建所选 provider 对应的集合，删除时返回 `404` 视为成功。
 - `thumbnail_url` 存为 `/public/thumbnails/blockout/<md5>.png`。
-- DINOv3 计算向量时使用 `public_path`，格式为 `thumbnails/blockout/<md5>.png`。
+- CLIP / DINOv3 计算向量时复用同一个导出的缩略图。
 - Patch embeddings 与 cls embedding 写入同一个资产行，默认会以较小的批次上传。

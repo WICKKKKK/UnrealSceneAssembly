@@ -53,4 +53,4 @@ try:
 except Exception as exc:
     _warn(f"Failed to initialize MCP controller: {exc}")
 
-_log("Python scripts loaded. Run ingest_static_meshes.ingest_static_meshes() manually to ingest StaticMesh thumbnails.")
+_log("Python scripts loaded. Run ingest_static_meshes.ingest_static_meshes(mode='all') manually to ingest StaticMesh thumbnails.")

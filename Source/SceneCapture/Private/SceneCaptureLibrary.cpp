@@ -183,17 +183,22 @@ FString MakeSafeBaseName(const FString& BaseName)
 	return SafeBaseName.IsEmpty() ? TEXT("capture") : SafeBaseName;
 }
 
-bool EnsureOutputDirectory(const FString& OutputDir)
+bool EnsureOutputDirectory(const FString& OutputDir, FString& OutAbsoluteOutputDir)
 {
+	OutAbsoluteOutputDir.Reset();
+
 	if (OutputDir.IsEmpty())
 	{
 		UE_LOG(LogSceneCaptureLibrary, Warning, TEXT("OutputDir is empty."));
 		return false;
 	}
 
-	if (!IFileManager::Get().MakeDirectory(*OutputDir, true))
+	OutAbsoluteOutputDir = FPaths::ConvertRelativePathToFull(OutputDir);
+	FPaths::NormalizeDirectoryName(OutAbsoluteOutputDir);
+
+	if (!IFileManager::Get().MakeDirectory(*OutAbsoluteOutputDir, true))
 	{
-		UE_LOG(LogSceneCaptureLibrary, Warning, TEXT("Failed to create output directory: %s"), *OutputDir);
+		UE_LOG(LogSceneCaptureLibrary, Warning, TEXT("Failed to create output directory: %s"), *OutAbsoluteOutputDir);
 		return false;
 	}
 
@@ -1516,7 +1521,8 @@ bool CaptureIdMapInternalFromActors(const FSceneCaptureCameraInfo& Camera, const
 
 bool USceneCaptureLibrary::CaptureSceneFromActiveViewport(const FString& OutputDir, const FString& BaseName, const int32 Width, const int32 Height)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1528,15 +1534,16 @@ bool USceneCaptureLibrary::CaptureSceneFromActiveViewport(const FString& OutputD
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString PngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.png"));
-	const FString JsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.json"));
+	const FString PngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.png"));
+	const FString JsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.json"));
 
 	return CaptureColorPng(Camera, PngPath) && WriteSceneJson(JsonPath, PngPath, Camera);
 }
 
 bool USceneCaptureLibrary::CaptureSceneFastFromActiveViewport(const FString& OutputDir, const FString& BaseName, const int32 Width, const int32 Height)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1548,15 +1555,16 @@ bool USceneCaptureLibrary::CaptureSceneFastFromActiveViewport(const FString& Out
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString PngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.png"));
-	const FString JsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.json"));
+	const FString PngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.png"));
+	const FString JsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.json"));
 
 	return CaptureColorPngFast(Camera, PngPath) && WriteSceneJson(JsonPath, PngPath, Camera);
 }
 
 bool USceneCaptureLibrary::CaptureIdMapFromActiveViewport(const FString& OutputDir, const FString& BaseName, const TArray<TSubclassOf<AActor>>& TargetClasses, const int32 Width, const int32 Height, const bool bOnlyVisibleTargets)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1568,15 +1576,16 @@ bool USceneCaptureLibrary::CaptureIdMapFromActiveViewport(const FString& OutputD
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString PngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_id.png"));
-	const FString JsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_id.json"));
+	const FString PngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_id.png"));
+	const FString JsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_id.json"));
 
 	return CaptureIdMapInternal(Camera, TargetClasses, PngPath, JsonPath, nullptr, bOnlyVisibleTargets);
 }
 
 bool USceneCaptureLibrary::CaptureSceneAndIdMap(const FString& OutputDir, const FString& BaseName, const TArray<TSubclassOf<AActor>>& TargetClasses, const int32 Width, const int32 Height, const bool bOnlyVisibleTargets)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1588,9 +1597,9 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMap(const FString& OutputDir, const 
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString ScenePngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.png"));
-	const FString IdPngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_id.png"));
-	const FString CombinedJsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT(".json"));
+	const FString ScenePngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.png"));
+	const FString IdPngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_id.png"));
+	const FString CombinedJsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT(".json"));
 
 	if (!CaptureColorPng(Camera, ScenePngPath))
 	{
@@ -1608,7 +1617,8 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMap(const FString& OutputDir, const 
 
 bool USceneCaptureLibrary::CaptureSceneAndIdMapFromActors(const TArray<AActor*>& TargetActors, const FString& OutputDir, const FString& BaseName, const int32 Width, const int32 Height, const bool bOnlyVisibleTargets)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1620,9 +1630,9 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMapFromActors(const TArray<AActor*>&
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString ScenePngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.png"));
-	const FString IdPngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_id.png"));
-	const FString CombinedJsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT(".json"));
+	const FString ScenePngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.png"));
+	const FString IdPngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_id.png"));
+	const FString CombinedJsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT(".json"));
 
 	if (!CaptureColorPng(Camera, ScenePngPath))
 	{
@@ -1640,7 +1650,8 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMapFromActors(const TArray<AActor*>&
 
 bool USceneCaptureLibrary::CaptureSceneAndIdMapFast(const FString& OutputDir, const FString& BaseName, const TArray<TSubclassOf<AActor>>& TargetClasses, const int32 Width, const int32 Height, const bool bOnlyVisibleTargets)
 {
-	if (!EnsureOutputDirectory(OutputDir))
+	FString AbsoluteOutputDir;
+	if (!EnsureOutputDirectory(OutputDir, AbsoluteOutputDir))
 	{
 		return false;
 	}
@@ -1652,9 +1663,9 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMapFast(const FString& OutputDir, co
 	}
 
 	const FString SafeBaseName = MakeSafeBaseName(BaseName);
-	const FString ScenePngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_scene.png"));
-	const FString IdPngPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT("_id.png"));
-	const FString CombinedJsonPath = FPaths::Combine(OutputDir, SafeBaseName + TEXT(".json"));
+	const FString ScenePngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_scene.png"));
+	const FString IdPngPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT("_id.png"));
+	const FString CombinedJsonPath = FPaths::Combine(AbsoluteOutputDir, SafeBaseName + TEXT(".json"));
 
 	if (!CaptureColorPngFast(Camera, ScenePngPath))
 	{

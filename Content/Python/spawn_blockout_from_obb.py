@@ -9,7 +9,7 @@ import hashlib
 import unreal
 
 import config
-import ingest_static_meshes as backend
+import ingest_common as backend
 
 
 CLEANUP_TAG = "OBBGeneratedBlockout"

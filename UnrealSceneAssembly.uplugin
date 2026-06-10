@@ -3,7 +3,7 @@
 	"Version": 1,
 	"VersionName": "1.0",
 	"FriendlyName": "Scene Assembly",
-	"Description": "Exports Unreal asset thumbnails and ingests DINOv3 vectors into Jade AI Services.",
+	"Description": "Scene Assembly using AI services.",
 	"Category": "Editor",
 	"CanContainContent": true,
 	"Modules": [

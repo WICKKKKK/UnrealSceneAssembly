@@ -9,7 +9,7 @@ import urllib.request
 import unreal
 
 import config
-import ingest_static_meshes as common
+import ingest_common as common
 
 
 DATA_URI_PREFIX = "data:image/png;base64,"
