@@ -1,0 +1,479 @@
+"""In-editor assembly test workflow used by the Slate test panel."""
+
+from __future__ import annotations
+
+import json
+import random
+from typing import Any
+
+import unreal
+
+from clip_retrieval import (
+    candidates_from_hits,
+    clip_search_assets_by_image,
+    default_clip_output_fields,
+)
+
+from .scene_handlers import (
+    SceneCommandError,
+    _actor_summary,
+    _actor_tags,
+    _editor_actor_subsystem,
+    _error,
+    _find_actor_by_path,
+    _spawn_asset_no_transaction,
+    _success,
+)
+from .solver_handlers import (
+    _candidate_structs as _solver_candidate_structs,
+    _pick_result_index,
+    _placement_result_dict,
+    _settings_struct,
+    _solver_library,
+)
+
+
+DEFAULT_RESULT_TAG = "SceneAssemblyResult"
+WHITEBOX_TAG = "BlockoutActor"
+
+
+def get_selected_actor() -> dict[str, Any]:
+    actor = _selected_actor()
+    return _success(actor=_actor_summary(actor, include_bounds=True))
+
+
+def get_selection_summary() -> dict[str, Any]:
+    return _success(**_selection_summary(_selected_actors()))
+
+
+def select_all_whiteboxes() -> dict[str, Any]:
+    actors = [actor for actor in _editor_actor_subsystem().get_all_level_actors() if actor and _is_blockout(actor)]
+    _editor_actor_subsystem().set_selected_level_actors(actors)
+    return _success(**_selection_summary(actors))
+
+
+def deselect_all() -> dict[str, Any]:
+    _editor_actor_subsystem().select_nothing()
+    return _success(**_selection_summary([]))
+
+
+def cleanup_assembly_results(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    tag = _result_tag(params)
+    deleted = _cleanup_tagged(tag)
+    return _success(tag=tag, deleted_count=deleted)
+
+
+def run_assembly_test(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    tag = _result_tag(params)
+    capture_context = _capture_context(params)
+    actors = capture_context["actors"]
+    skipped_non_whitebox: list[dict[str, Any]] = []
+    if not actors:
+        return _error(
+            "No processable actors in the capture JSON. Capture selected Blockout actors first.",
+            items=[],
+            actor_count=0,
+            skipped_non_whitebox=skipped_non_whitebox,
+            cleanup={"tag": tag, "deleted_count": 0},
+        )
+
+    base_seed = _base_random_seed(params)
+    items = [
+        _solve_one(actor, capture_context["entry_by_path"].get(actor.get_path_name(), {}), capture_context, params, tag, base_seed, index)
+        for index, actor in enumerate(actors)
+    ]
+
+    deleted = 0
+    spawned_count = 0
+    with unreal.ScopedEditorTransaction("Scene Assembly: Batch Solve and Place"):
+        deleted = _cleanup_tagged_no_transaction(tag)
+        for item in items:
+            spawn_params = item.pop("spawn_params", None)
+            if not spawn_params:
+                continue
+            try:
+                spawned_actor = _spawn_asset_no_transaction(spawn_params)
+                item["spawned"] = _actor_summary(spawned_actor, include_bounds=True)
+                spawned_count += 1
+            except Exception as exc:
+                item["status"] = "spawn_error"
+                item["error"] = str(exc)
+
+    succeeded = sum(1 for item in items if item.get("status") == "placed")
+    return _success(
+        items=items,
+        actor_count=len(actors),
+        succeeded=succeeded,
+        spawned_count=spawned_count,
+        skipped_non_whitebox=skipped_non_whitebox,
+        cleanup={"tag": tag, "deleted_count": deleted},
+        random_seed=base_seed,
+        whitebox_only=_bool_param(params, "whitebox_only", True),
+        capture_json_path=capture_context["capture_json_path"],
+        concept_art_path=capture_context["concept_art_path"],
+    )
+
+
+def _solve_one(actor: Any, id_entry: dict[str, Any], capture_context: dict[str, Any], params: dict[str, Any], tag: str, base_seed: int | None, actor_index: int) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "actor": _actor_summary(actor, include_bounds=True),
+        "status": "pending",
+        "results": [],
+        "count": 0,
+        "chosen_index": 0,
+        "random_seed": None,
+        "spawned": None,
+    }
+
+    try:
+        bbox = _pixel_bbox(id_entry)
+        item["pixel_bbox"] = bbox
+        if not bbox:
+            item["status"] = "no_pixel_bbox"
+            item["error"] = "Captured ID map contains no visible pixels for this actor."
+            return item
+
+        data_uri = _call_unreal_static(
+            _scene_capture_library(),
+            "crop_image_region_to_base64",
+            capture_context["concept_art_path"],
+            int(capture_context["image_width"]),
+            int(capture_context["image_height"]),
+            int(bbox[0]),
+            int(bbox[1]),
+            int(bbox[2]),
+            int(bbox[3]),
+        )
+        if not data_uri:
+            item["status"] = "crop_error"
+            item["error"] = "Failed to crop the concept art image for this actor."
+            return item
+
+        candidate_limit = _int_param(params, "candidate_limit", 50)
+        timeout = _float_param(params, "timeout", 15.0)
+        search = clip_search_assets_by_image(
+            image_url=data_uri,
+            limit=candidate_limit,
+            project_names=_optional_string_list(params.get("project_names")),
+            asset_types=_optional_string_list(params.get("asset_types")),
+            filters=params.get("filters") if isinstance(params.get("filters"), dict) else None,
+            output_fields=default_clip_output_fields(include_bounding_box=True),
+            score_threshold=_float_param(params, "score_threshold", 0.0),
+            ef=_int_param(params, "ef", 64),
+            collection=_optional_string(params.get("collection")),
+            timeout=timeout,
+        )
+        candidates, skipped = candidates_from_hits(search.get("hits") or [])
+        item["search"] = _search_summary(search, candidates, skipped)
+        if not candidates:
+            item["status"] = "no_candidates"
+            item["error"] = "CLIP search returned no candidates with asset_path and bounding_box."
+            return item
+
+        settings = _settings_struct(params.get("settings") or _settings_from_params(params))
+        scene_obb = _solver_library().get_actor_obb(actor)
+        results = [_placement_result_dict(result) for result in _solver_library().solve_placement(scene_obb, _candidate_structs(candidates), settings)]
+        item["results"] = results
+        item["count"] = len(results)
+        if not results:
+            item["status"] = "no_results"
+            item["error"] = "Solver returned no placement results."
+            return item
+
+        pick_params = dict(params)
+        if base_seed is not None and len(results) > 1:
+            pick_params["random_seed"] = base_seed + actor_index
+        chosen_index, random_seed = _pick_result_index(pick_params, len(results))
+        best = results[chosen_index]
+        label = _optional_string(params.get("label")) or f"SceneAssembly_{_safe_label(actor.get_actor_label())}"
+        item["chosen_index"] = chosen_index
+        item["random_seed"] = random_seed
+        item["spawn_params"] = {
+            "asset_path": best["asset_path"],
+            "location": best["transform"]["location"],
+            "rotation": best["transform"]["rotation"],
+            "scale": best["transform"]["scale"],
+            "label": label,
+            "tags": [tag],
+        }
+        item["status"] = "placed"
+        return item
+    except Exception as exc:
+        item["status"] = "error"
+        item["error"] = str(exc)
+        return item
+
+
+def _selected_actor() -> Any:
+    actors = _selected_actors()
+    if len(actors) != 1:
+        raise SceneCommandError(f"Select exactly one actor. Current selection count: {len(actors)}")
+    return actors[0]
+
+
+def _selected_actors() -> list[Any]:
+    return [actor for actor in _editor_actor_subsystem().get_selected_level_actors() if actor]
+
+
+def _resolve_actors(params: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]]:
+    actor_paths = params.get("actor_paths")
+    if isinstance(actor_paths, str):
+        actor_paths = [path.strip() for path in actor_paths.split(",") if path.strip()]
+    if isinstance(actor_paths, (list, tuple)) and actor_paths:
+        actors = []
+        for path in actor_paths:
+            try:
+                actors.append(_find_actor_by_path(str(path)))
+            except Exception:
+                continue
+    else:
+        actors = _selected_actors()
+
+    skipped_non_whitebox: list[dict[str, Any]] = []
+    if _bool_param(params, "whitebox_only", True):
+        filtered = []
+        for actor in actors:
+            if _is_blockout(actor):
+                filtered.append(actor)
+            else:
+                skipped_non_whitebox.append(_selection_actor_summary(actor))
+        actors = filtered
+    return actors, skipped_non_whitebox
+
+
+def _capture_context(params: dict[str, Any]) -> dict[str, Any]:
+    capture_json_path = _optional_string(params.get("capture_json_path"))
+    concept_art_path = _optional_string(params.get("concept_art_path"))
+    if not capture_json_path:
+        raise SceneCommandError("Parameter 'capture_json_path' is required. Capture the aesthetic reference first.")
+    if not concept_art_path:
+        raise SceneCommandError("Parameter 'concept_art_path' is required. Upload a concept art image first.")
+
+    with open(capture_json_path, "r", encoding="utf-8") as handle:
+        capture_data = json.load(handle)
+    if not isinstance(capture_data, dict):
+        raise SceneCommandError("Capture JSON is invalid.")
+
+    image_width, image_height = _capture_image_size(capture_data)
+    entries = capture_data.get("id_map")
+    if not isinstance(entries, list):
+        raise SceneCommandError("Capture JSON does not contain an id_map array.")
+
+    actors: list[Any] = []
+    entry_by_path: dict[str, dict[str, Any]] = {}
+    missing_actor_paths: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        actor_path = _optional_string(entry.get("actor_path"))
+        if not actor_path:
+            continue
+        try:
+            actor = _find_actor_by_path(actor_path)
+        except Exception:
+            missing_actor_paths.append(actor_path)
+            continue
+        actors.append(actor)
+        entry_by_path[actor_path] = entry
+
+    return {
+        "capture_json_path": capture_json_path,
+        "concept_art_path": concept_art_path,
+        "capture_data": capture_data,
+        "entries": entries,
+        "actors": actors,
+        "entry_by_path": entry_by_path,
+        "missing_actor_paths": missing_actor_paths,
+        "image_width": image_width,
+        "image_height": image_height,
+    }
+
+
+def _call_unreal_static(library: Any, snake_name: str, *args: Any) -> Any:
+    method = getattr(library, snake_name, None)
+    if method is None:
+        parts = snake_name.split("_")
+        method = getattr(library, parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:]), None)
+    if method is None:
+        raise SceneCommandError(f"{library} does not expose {snake_name}.")
+    result = method(*args)
+    if isinstance(result, tuple):
+        return next((value for value in result if isinstance(value, str)), result[0] if result else None)
+    return result
+
+
+def _capture_image_size(capture_data: dict[str, Any]) -> tuple[int, int]:
+    image_size = capture_data.get("image_size")
+    if isinstance(image_size, dict):
+        width = int(image_size.get("width") or 0)
+        height = int(image_size.get("height") or 0)
+        if width > 0 and height > 0:
+            return width, height
+    camera = capture_data.get("camera")
+    if isinstance(camera, dict):
+        resolution = camera.get("resolution")
+        if isinstance(resolution, dict):
+            width = int(resolution.get("width") or 0)
+            height = int(resolution.get("height") or 0)
+            if width > 0 and height > 0:
+                return width, height
+    raise SceneCommandError("Capture JSON does not contain a valid image_size/resolution.")
+
+
+def _pixel_bbox(entry: dict[str, Any]) -> list[int] | None:
+    bbox = entry.get("pixel_bbox") if isinstance(entry, dict) else None
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    values = [int(value) for value in bbox]
+    if values[0] > values[2] or values[1] > values[3]:
+        return None
+    return values
+
+
+def _scene_capture_library() -> Any:
+    library = getattr(unreal, "SceneCaptureLibrary", None)
+    if library is None:
+        raise SceneCommandError("SceneCaptureLibrary is unavailable. Rebuild/reload the SceneCapture plugin.")
+    return library
+
+
+def _is_whitebox(actor: Any) -> bool:
+    return WHITEBOX_TAG in _actor_tags(actor)
+
+
+def _is_blockout(actor: Any) -> bool:
+    if not actor:
+        return False
+    try:
+        blockout_class = unreal.load_class(None, "/Script/Blockout.BlockoutBaseDynamicMeshActor")
+        actor_class = actor.get_class() if hasattr(actor, "get_class") else None
+        current_class = actor_class
+        while blockout_class and current_class:
+            if current_class == blockout_class:
+                return True
+            current_class = current_class.get_super_class() if hasattr(current_class, "get_super_class") else None
+        if actor_class and str(actor_class.get_path_name()).startswith("/Script/Blockout."):
+            return True
+    except Exception:
+        pass
+    return _is_whitebox(actor)
+
+
+def _selection_summary(actors: list[Any]) -> dict[str, Any]:
+    actor_items = [_selection_actor_summary(actor) for actor in actors]
+    return {
+        "selected_count": len(actor_items),
+        "whitebox_count": sum(1 for item in actor_items if item.get("is_whitebox")),
+        "actors": actor_items,
+    }
+
+
+def _selection_actor_summary(actor: Any) -> dict[str, Any]:
+    tags = _actor_tags(actor)
+    return {
+        "label": actor.get_actor_label() if hasattr(actor, "get_actor_label") else str(actor),
+        "actor_path": actor.get_path_name() if hasattr(actor, "get_path_name") else "",
+        "is_whitebox": _is_blockout(actor),
+        "tags": tags,
+    }
+
+
+def _cleanup_tagged(tag: str) -> int:
+    with unreal.ScopedEditorTransaction("Scene Assembly: Cleanup Test Results"):
+        return _cleanup_tagged_no_transaction(tag)
+
+
+def _cleanup_tagged_no_transaction(tag: str) -> int:
+    if not tag:
+        raise SceneCommandError("Result tag must not be empty.")
+    actors = [actor for actor in _editor_actor_subsystem().get_all_level_actors() if actor and tag in _actor_tags(actor)]
+    deleted = 0
+    for actor in actors:
+        if _editor_actor_subsystem().destroy_actor(actor):
+            deleted += 1
+    return deleted
+
+
+def _candidate_structs(candidates: list[dict[str, Any]]) -> list[Any]:
+    return _solver_candidate_structs(candidates)
+
+
+def _search_summary(search: dict[str, Any], candidates: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "collection_name": search.get("collection_name"),
+        "model": search.get("model"),
+        "search_time_ms": search.get("search_time_ms"),
+        "hit_count": search.get("count", 0),
+        "candidate_count": len(candidates),
+        "skipped": skipped,
+        "filters": search.get("filters"),
+    }
+
+
+def _settings_from_params(params: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "scale_mode",
+        "combine_mode",
+        "weight_semantic",
+        "weight_geometry",
+        "scale_sensitivity",
+        "aspect_sensitivity",
+        "normalize_semantic",
+        "top_k",
+        "final_score_threshold",
+    )
+    return {key: params[key] for key in keys if key in params and params[key] is not None}
+
+
+def _result_tag(params: dict[str, Any]) -> str:
+    return _optional_string(params.get("result_tag") or params.get("tag")) or DEFAULT_RESULT_TAG
+
+
+def _base_random_seed(params: dict[str, Any]) -> int | None:
+    if _int_param(params, "top_k", 1) <= 1:
+        return None
+    seed_value = params.get("random_seed")
+    if seed_value in (None, "", 0, "0"):
+        return random.randrange(1, 2147483647)
+    return int(seed_value)
+
+
+def _optional_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _optional_string_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",") if item.strip()]
+        return items or None
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or None
+    return None
+
+
+def _bool_param(params: dict[str, Any], key: str, default: bool) -> bool:
+    value = params.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(value)
+
+
+def _int_param(params: dict[str, Any], key: str, default: int) -> int:
+    value = params.get(key, default)
+    return int(default if value in (None, "") else value)
+
+
+def _float_param(params: dict[str, Any], key: str, default: float) -> float:
+    value = params.get(key, default)
+    return float(default if value in (None, "") else value)
+
+
+def _safe_label(value: Any) -> str:
+    text = str(value or "Actor").strip() or "Actor"
+    return "".join(char if char.isalnum() or char in "_-" else "_" for char in text)

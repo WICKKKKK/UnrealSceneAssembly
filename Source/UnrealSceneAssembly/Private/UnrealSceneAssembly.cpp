@@ -11,12 +11,14 @@
 #include "Serialization/JsonWriter.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
+#include "UI/SSceneAssemblyTestPanel.h"
 #include "UI/SMCPControlPanel.h"
 #include "Widgets/Docking/SDockTab.h"
 
 namespace
 {
 static const FName SceneAssemblyMCPTabName(TEXT("SceneAssemblyMCP"));
+static const FName SceneAssemblyTestTabName(TEXT("SceneAssemblyTest"));
 static bool bStoppingPythonMCPRuntime = false;
 
 FString MakeJsonError(const FString& ErrorMessage)
@@ -93,6 +95,12 @@ void FUnrealSceneAssemblyModule::StartupModule()
 		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"))
 		.SetMenuType(ETabSpawnerMenuType::Hidden);
 
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SceneAssemblyTestTabName, FOnSpawnTab::CreateRaw(this, &FUnrealSceneAssemblyModule::SpawnTestPanelTab))
+		.SetDisplayName(LOCTEXT("SceneAssemblyTestTabTitle", "Scene Assembly Test"))
+		.SetTooltipText(LOCTEXT("SceneAssemblyTestTabTooltip", "Search, solve, and place Scene Assembly candidates for the selected actor."))
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus"))
+		.SetMenuType(ETabSpawnerMenuType::Hidden);
+
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FUnrealSceneAssemblyModule::RegisterMenus));
 }
 
@@ -102,6 +110,7 @@ void FUnrealSceneAssemblyModule::ShutdownModule()
 	UToolMenus::UnRegisterStartupCallback(this);
 	UToolMenus::UnregisterOwner(this);
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SceneAssemblyMCPTabName);
+	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SceneAssemblyTestTabName);
 }
 
 FString FUnrealSceneAssemblyModule::ExecutePythonControllerCommand(const FString& FunctionCall)
@@ -175,6 +184,12 @@ void FUnrealSceneAssemblyModule::RegisterMenus()
 			LOCTEXT("SceneAssemblyMCPMenuTooltip", "Open the Scene Assembly MCP control panel."),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"),
 			FUIAction(FExecuteAction::CreateRaw(this, &FUnrealSceneAssemblyModule::OpenMCPControlPanel)));
+		Section.AddMenuEntry(
+			TEXT("SceneAssemblyTest"),
+			LOCTEXT("SceneAssemblyTestMenuLabel", "Scene Assembly Test"),
+			LOCTEXT("SceneAssemblyTestMenuTooltip", "Open the Scene Assembly asset placement test panel."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus"),
+			FUIAction(FExecuteAction::CreateRaw(this, &FUnrealSceneAssemblyModule::OpenTestPanel)));
 	}
 
 	if (UToolMenu* ToolbarMenu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.LevelEditorToolBar.User")))
@@ -186,6 +201,12 @@ void FUnrealSceneAssemblyModule::RegisterMenus()
 			LOCTEXT("SceneAssemblyMCPToolbarLabel", "MCP"),
 			LOCTEXT("SceneAssemblyMCPToolbarTooltip", "Open the Scene Assembly MCP control panel."),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings")));
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+			TEXT("SceneAssemblyTestToolbarButton"),
+			FUIAction(FExecuteAction::CreateRaw(this, &FUnrealSceneAssemblyModule::OpenTestPanel)),
+			LOCTEXT("SceneAssemblyTestToolbarLabel", "Assemble"),
+			LOCTEXT("SceneAssemblyTestToolbarTooltip", "Open the Scene Assembly placement test panel."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus")));
 	}
 }
 
@@ -194,12 +215,26 @@ void FUnrealSceneAssemblyModule::OpenMCPControlPanel()
 	FGlobalTabmanager::Get()->TryInvokeTab(SceneAssemblyMCPTabName);
 }
 
+void FUnrealSceneAssemblyModule::OpenTestPanel()
+{
+	FGlobalTabmanager::Get()->TryInvokeTab(SceneAssemblyTestTabName);
+}
+
 TSharedRef<SDockTab> FUnrealSceneAssemblyModule::SpawnMCPControlPanelTab(const FSpawnTabArgs& SpawnTabArgs)
 {
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
 		[
 			SNew(SMCPControlPanel)
+		];
+}
+
+TSharedRef<SDockTab> FUnrealSceneAssemblyModule::SpawnTestPanelTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+	return SNew(SDockTab)
+		.TabRole(ETabRole::NomadTab)
+		[
+			SNew(SSceneAssemblyTestPanel)
 		];
 }
 

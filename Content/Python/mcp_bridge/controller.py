@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import json
 import os
 import threading
@@ -262,6 +263,62 @@ def start_json(port: int | str | None = None) -> str:
 def stop_json() -> str:
     controller = get_controller()
     return _json_result(True, **controller.stop())
+
+
+@_safe_json
+def get_selected_whitebox_json() -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.get_selected_actor())
+
+
+@_safe_json
+def get_selection_summary_json() -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.get_selection_summary())
+
+
+@_safe_json
+def select_all_whiteboxes_json() -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.select_all_whiteboxes())
+
+
+@_safe_json
+def deselect_all_json() -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.deselect_all())
+
+
+@_safe_json
+def cleanup_assembly_results_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.cleanup_assembly_results(_decode_payload(payload_b64)))
+
+
+@_safe_json
+def run_assembly_test_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.run_assembly_test(_decode_payload(payload_b64)))
+
+
+def _json_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _decode_payload(payload_b64: str) -> dict[str, Any]:
+    if not payload_b64:
+        return {}
+    raw = base64.b64decode(str(payload_b64).encode("ascii")).decode("utf-8")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Panel payload must be a JSON object.")
+    return payload
 
 
 def shutdown() -> None:

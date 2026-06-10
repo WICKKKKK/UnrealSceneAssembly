@@ -9,12 +9,12 @@ public class UnrealSceneAssembly : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
+			"CoreUObject",
+			"Engine",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"CoreUObject",
-			"Engine",
 			"UnrealEd",
 			"Slate",
 			"SlateCore",
@@ -25,10 +25,13 @@ public class UnrealSceneAssembly : ModuleRules
 			"Projects",
 			"PythonScriptPlugin",
 			"Json",
+			"PropertyEditor",
 			"ImageWrapper",
 			"AssetRegistry",
 			"RenderCore",
 			"RHI",
+			"SceneCapture",
+			"DesktopPlatform",
 		});
 	}
 }

@@ -11,11 +11,29 @@
 			"Name": "UnrealSceneAssembly",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "Blockout",
+			"Type": "EditorNoCommandlet",
+			"LoadingPhase": "PostEngineInit"
+		},
+		{
+			"Name": "SceneCapture",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "GeometryScripting",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
 			"Enabled": true
 		}
 	]

@@ -344,6 +344,7 @@ def _spawn_asset_no_transaction(params: dict[str, Any]) -> Any:
     if not actor:
         raise SceneCommandError(f"Failed to spawn asset: {asset_path}")
     _set_label_if_requested(actor, params.get("label"))
+    _set_tags_if_requested(actor, params.get("tags"))
     if scale is not None:
         actor.set_actor_scale3d(scale)
     return actor
@@ -848,6 +849,26 @@ def _matches_pattern(value: str, pattern: str) -> bool:
 def _set_label_if_requested(actor: Any, label: Any) -> None:
     if label is not None and str(label).strip():
         actor.set_actor_label(str(label).strip())
+
+
+def _set_tags_if_requested(actor: Any, tags: Any) -> None:
+    if tags is None:
+        return
+    if isinstance(tags, str):
+        values = [item.strip() for item in tags.split(",") if item.strip()]
+    elif isinstance(tags, (list, tuple)):
+        values = [str(item).strip() for item in tags if str(item).strip()]
+    else:
+        raise SceneCommandError("Parameter 'tags' must be a string or list of strings.")
+    if not values:
+        return
+
+    merged = _actor_tags(actor)
+    for value in values:
+        if value not in merged:
+            merged.append(value)
+    _modify(actor)
+    actor.set_editor_property("tags", merged)
 
 
 def _modify(obj: Any) -> None:

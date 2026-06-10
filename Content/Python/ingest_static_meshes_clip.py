@@ -3,12 +3,13 @@ import time
 
 import unreal
 
+import asset_tagging
 import config
 import ingest_static_meshes as common
 
 
 RESERVED_OUTPUT_FIELDS = common.RESERVED_OUTPUT_FIELDS
-VERIFY_OUTPUT_FIELDS = RESERVED_OUTPUT_FIELDS + ["bounding_box"]
+VERIFY_OUTPUT_FIELDS = RESERVED_OUTPUT_FIELDS + ["bounding_box", "ai_tags", "ai_description"]
 DATA_URI_PREFIX = "data:image/png;base64,"
 CLIP_IMAGE_EMBED_API_LIMIT = 16
 
@@ -215,7 +216,17 @@ def asset_bounding_box(asset_data, asset_path):
         return None
 
 
-def build_row(asset_id, asset_name, asset_path, thumbnail_url, public_path, vector, bounding_box=None):
+def build_row(
+    asset_id,
+    asset_name,
+    asset_path,
+    thumbnail_url,
+    public_path,
+    vector,
+    bounding_box=None,
+    ai_tags=None,
+    ai_description=None,
+):
     fields = {
         "thumbnail_url": thumbnail_url,
         "asset_name": asset_name,
@@ -225,6 +236,10 @@ def build_row(asset_id, asset_name, asset_path, thumbnail_url, public_path, vect
     }
     if bounding_box is not None:
         fields["bounding_box"] = bounding_box
+    if ai_tags is not None:
+        fields["ai_tags"] = ai_tags
+    if ai_description is not None:
+        fields["ai_description"] = ai_description
     return {
         "project_name": config.PROJECT_NAME,
         "asset_id": asset_id,
@@ -243,8 +258,27 @@ def add_row_from_vector(item, vector, rows):
             item["public_path"],
             vector,
             item.get("bounding_box"),
+            item.get("ai_tags"),
+            item.get("ai_description"),
         )
     )
+
+
+def enrich_pending_ai_metadata(items):
+    if not items or not getattr(config, "TAGGING_ENABLED", False):
+        return
+
+    unreal.log("[SceneAssembly] AI tagging batch: {0} thumbnails".format(len(items)))
+    try:
+        results = asset_tagging.generate_batch(items, getattr(config, "TAGGING_CONCURRENCY", 6))
+    except Exception as exc:
+        unreal.log_warning("[SceneAssembly] AI tagging batch failed: {0}".format(exc))
+        results = {}
+
+    for item in items:
+        result = results.get(item.get("asset_id")) or {}
+        item["ai_tags"] = result.get("ai_tags") or []
+        item["ai_description"] = result.get("ai_description") or ""
 
 
 def flush_pending_embeddings(pending, rows, failed):
@@ -259,9 +293,16 @@ def flush_pending_embeddings(pending, rows, failed):
         unreal.log_warning(
             "[SceneAssembly] CLIP batch embedding failed, falling back to single-image embedding: {0}".format(exc)
         )
+        embedded_items = []
         for item in pending:
             try:
                 vector = embed_image(item["out_path"])
+                embedded_items.append((item, vector))
+            except Exception as item_exc:
+                common.record_failed_asset(failed, item["asset_path"], item_exc)
+        enrich_pending_ai_metadata([item for item, _ in embedded_items])
+        for item, vector in embedded_items:
+            try:
                 add_row_from_vector(item, vector, rows)
                 succeeded += 1
             except Exception as item_exc:
@@ -269,6 +310,7 @@ def flush_pending_embeddings(pending, rows, failed):
         pending[:] = []
         return succeeded
 
+    enrich_pending_ai_metadata(pending)
     for item, vector in zip(pending, vectors):
         try:
             add_row_from_vector(item, vector, rows)

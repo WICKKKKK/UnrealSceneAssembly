@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import os
+import random
 import site
-import json
-import socket
 import sys
 from typing import Any
-import urllib.error
-import urllib.request
 
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +21,14 @@ if CONTENT_PYTHON_DIR not in sys.path:
     sys.path.insert(0, CONTENT_PYTHON_DIR)
 
 from bridge_client import BridgeError, bridge_settings, call_bridge
+from clip_retrieval import (
+    clip_error as _clip_error,
+    clip_search_assets as _clip_search_assets,
+    default_clip_output_fields as _default_clip_output_fields,
+    candidates_from_hits as _candidates_from_hits,
+    auto_query as _auto_query,
+    solver_settings_payload as _solver_settings_payload,
+)
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -54,98 +59,6 @@ def _get_int(name: str, default: int) -> int:
 def _normalize_path(path: str) -> str:
     path = path.strip() or "/mcp"
     return path if path.startswith("/") else f"/{path}"
-
-
-def _clip_config() -> dict[str, Any]:
-    try:
-        import config as scene_config
-    except Exception as exc:
-        raise RuntimeError(f"Failed to import Content/Python/config.py: {exc}") from exc
-
-    api_key = str(getattr(scene_config, "API_KEY", "") or "").strip()
-    if not api_key:
-        raise RuntimeError("API_KEY is not configured in Content/Python/config.py")
-
-    return {
-        "base_url": str(getattr(scene_config, "BASE_URL", "http://localhost:8000") or "").rstrip("/"),
-        "api_prefix": str(getattr(scene_config, "API_PREFIX", "/api/v1") or "").rstrip("/"),
-        "api_key": api_key,
-        "collection": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
-        "project_name": str(getattr(scene_config, "PROJECT_NAME", "") or ""),
-        "timeout": float(getattr(scene_config, "HTTP_TIMEOUT_SECONDS", 120.0) or 120.0),
-    }
-
-
-def _clip_api_url(path: str, cfg: dict[str, Any]) -> str:
-    path = path if path.startswith("/") else f"/{path}"
-    return f"{cfg['base_url']}{cfg['api_prefix']}{path}"
-
-
-def _clip_request_json(path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-    cfg = _clip_config()
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        _clip_api_url(path, cfg),
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {cfg['api_key']}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=timeout or cfg["timeout"]) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:1000]
-        raise RuntimeError(f"JadeServices HTTP {exc.code}: {detail or exc.reason}") from exc
-    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
-        raise RuntimeError(f"Failed to reach JadeServices: {exc}") from exc
-
-    try:
-        envelope = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"JadeServices returned invalid JSON: {exc}") from exc
-
-    code = envelope.get("code")
-    if code not in (None, 0, 200):
-        message = envelope.get("message") or "JadeServices returned an error"
-        raise RuntimeError(f"JadeServices code {code}: {message}")
-
-    data = envelope.get("data")
-    if not isinstance(data, dict):
-        raise RuntimeError("JadeServices response did not include a data object")
-    return data
-
-
-def _clip_error(exc: Exception) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "status": "error",
-        "message": str(exc),
-    }
-
-
-def _bounded_int(value: int, minimum: int, maximum: int) -> int:
-    return max(minimum, min(maximum, int(value)))
-
-
-def _build_clip_filters(
-    project_names: list[str] | None = None,
-    asset_types: list[str] | None = None,
-    filters: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    cfg = _clip_config()
-    merged: dict[str, Any] = dict(filters or {})
-    if project_names is None and "project_names" not in merged and cfg["project_name"]:
-        merged["project_names"] = [cfg["project_name"]]
-    elif project_names is not None:
-        merged["project_names"] = project_names
-    if asset_types is not None:
-        merged["asset_types"] = asset_types
-    return {key: value for key, value in merged.items() if value not in (None, [], {})}
 
 
 def _server_config() -> dict[str, Any]:
@@ -462,46 +375,300 @@ def unreal_search_assets_by_text(
 ) -> dict[str, Any]:
     """Search static mesh assets by natural-language CLIP text query through JadeServices."""
     try:
-        query = str(text or "").strip()
-        if not query:
-            raise ValueError("text must not be empty")
-
-        cfg = _clip_config()
-        collection_name = (collection or cfg["collection"]).strip()
-        if not collection_name:
-            raise ValueError("collection must not be empty")
-
-        request_filters = _build_clip_filters(project_names=project_names, asset_types=asset_types, filters=filters)
-        payload: dict[str, Any] = {
-            "text": query,
-            "limit": _bounded_int(limit, 1, 100),
-            "offset": max(0, int(offset)),
-            "search_params": {
-                "mode": "hnsw",
-                "ef": _bounded_int(ef, 1, 512),
-                "score_threshold": float(score_threshold),
-            },
-        }
-        if request_filters:
-            payload["filters"] = request_filters
-        if output_fields is not None:
-            payload["output_fields"] = output_fields
-
-        data = _clip_request_json(f"/clip/collections/{collection_name}/search/single_text", payload, cfg["timeout"])
-        hits = data.get("hits") or []
-        return {
-            "ok": True,
-            "status": "success",
-            "collection_name": data.get("collection_name", collection_name),
-            "model": data.get("model"),
-            "query_vector_dim": data.get("query_vector_dim"),
-            "search_time_ms": data.get("search_time_ms"),
-            "count": len(hits),
-            "hits": hits,
-            "filters": request_filters,
-        }
+        return _clip_search_assets(
+            text=text,
+            limit=limit,
+            offset=offset,
+            project_names=project_names,
+            asset_types=asset_types,
+            filters=filters,
+            output_fields=output_fields,
+            score_threshold=score_threshold,
+            ef=ef,
+            collection=collection,
+        )
     except Exception as exc:
         return _clip_error(exc)
+
+
+@mcp.tool()
+def unreal_get_actor_obb(actor_path: str) -> dict[str, Any]:
+    """Return the solver OBB for an actor. OBB local Z is the height axis."""
+    return _call_unreal("get_actor_obb", {"actor_path": actor_path})
+
+
+@mcp.tool()
+def unreal_solve_asset_placement(
+    actor_path: str,
+    candidates: list[dict[str, Any]],
+    scale_mode: str = "FitIoU",
+    combine_mode: str = "Multiplicative",
+    weight_semantic: float = 1.0,
+    weight_geometry: float = 1.0,
+    scale_sensitivity: float = 0.5,
+    aspect_sensitivity: float = 1.0,
+    normalize_semantic: bool = False,
+    top_k: int = 1,
+    final_score_threshold: float = 0.0,
+) -> dict[str, Any]:
+    """Solve Top-K asset placement transforms for an actor OBB and candidate asset bounding boxes."""
+    return _call_unreal(
+        "solve_placement",
+        {
+            "actor_path": actor_path,
+            "candidates": candidates,
+            "settings": _solver_settings_payload(
+                scale_mode=scale_mode,
+                combine_mode=combine_mode,
+                weight_semantic=weight_semantic,
+                weight_geometry=weight_geometry,
+                scale_sensitivity=scale_sensitivity,
+                aspect_sensitivity=aspect_sensitivity,
+                normalize_semantic=normalize_semantic,
+                top_k=top_k,
+                final_score_threshold=final_score_threshold,
+            ),
+        },
+    )
+
+
+@mcp.tool()
+def unreal_get_semantic(actor_path: str) -> dict[str, Any]:
+    """Read SceneSemanticComponent fields from an actor, if present."""
+    return _call_unreal("get_semantic", {"actor_path": actor_path})
+
+
+@mcp.tool()
+def unreal_set_semantic(actor_path: str, category: str = "", description: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    """Add or update an actor's SceneSemanticComponent fields."""
+    return _call_unreal("set_semantic", {"actor_path": actor_path, "category": category, "description": description, "tags": tags or []})
+
+
+@mcp.tool()
+def unreal_auto_assemble(
+    actor_path: str,
+    text: str | None = None,
+    candidate_limit: int = 50,
+    auto_place: bool = True,
+    label: str | None = None,
+    project_names: list[str] | None = None,
+    asset_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+    score_threshold: float = 0.0,
+    ef: int = 64,
+    collection: str | None = None,
+    scale_mode: str = "FitIoU",
+    combine_mode: str = "Multiplicative",
+    weight_semantic: float = 1.0,
+    weight_geometry: float = 1.0,
+    scale_sensitivity: float = 0.5,
+    aspect_sensitivity: float = 1.0,
+    normalize_semantic: bool = False,
+    top_k: int = 1,
+    final_score_threshold: float = 0.0,
+    random_seed: int | None = None,
+) -> dict[str, Any]:
+    """Retrieve CLIP candidates from actor semantics, rerank geometrically, and optionally place one asset. Top-K > 1 enables seeded random pick."""
+    semantic = _call_unreal("get_semantic", {"actor_path": actor_path})
+    if not semantic.get("ok"):
+        return semantic
+
+    query = _auto_query(text, semantic)
+    if not query:
+        return _clip_error(ValueError("No search text, actor semantic Tags, or actor label is available."))
+
+    try:
+        search = _clip_search_assets(
+            text=query,
+            limit=candidate_limit,
+            project_names=project_names,
+            asset_types=asset_types,
+            filters=filters,
+            output_fields=_default_clip_output_fields(include_bounding_box=True),
+            score_threshold=score_threshold,
+            ef=ef,
+            collection=collection,
+        )
+    except Exception as exc:
+        return _clip_error(exc)
+
+    candidates, skipped = _candidates_from_hits(search.get("hits") or [])
+    if not candidates:
+        error = _clip_error(RuntimeError("CLIP search returned no candidates with asset_path and bounding_box."))
+        error.update({
+            "query": query,
+            "search_count": search.get("count", 0),
+            "skipped": skipped,
+        })
+        return error
+
+    result = _call_unreal(
+        "auto_assemble",
+        {
+            "actor_path": actor_path,
+            "candidates": candidates,
+            "auto_place": auto_place,
+            "label": label,
+            "random_seed": random_seed,
+            "settings": _solver_settings_payload(
+                scale_mode=scale_mode,
+                combine_mode=combine_mode,
+                weight_semantic=weight_semantic,
+                weight_geometry=weight_geometry,
+                scale_sensitivity=scale_sensitivity,
+                aspect_sensitivity=aspect_sensitivity,
+                normalize_semantic=normalize_semantic,
+                top_k=top_k,
+                final_score_threshold=final_score_threshold,
+            ),
+        },
+    )
+    result["query"] = query
+    result["search"] = {
+        "collection_name": search.get("collection_name"),
+        "model": search.get("model"),
+        "search_time_ms": search.get("search_time_ms"),
+        "hit_count": search.get("count", 0),
+        "candidate_count": len(candidates),
+        "skipped": skipped,
+    }
+    return result
+
+
+@mcp.tool()
+def unreal_auto_assemble_batch(
+    actor_paths: list[str],
+    text: str | None = None,
+    candidate_limit: int = 50,
+    auto_place: bool = True,
+    label: str | None = None,
+    project_names: list[str] | None = None,
+    asset_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+    score_threshold: float = 0.0,
+    ef: int = 64,
+    collection: str | None = None,
+    scale_mode: str = "FitIoU",
+    combine_mode: str = "Multiplicative",
+    weight_semantic: float = 1.0,
+    weight_geometry: float = 1.0,
+    scale_sensitivity: float = 0.5,
+    aspect_sensitivity: float = 1.0,
+    normalize_semantic: bool = False,
+    top_k: int = 1,
+    final_score_threshold: float = 0.0,
+    random_seed: int | None = None,
+) -> dict[str, Any]:
+    """Batch retrieve CLIP candidates and place one asset per actor path."""
+    if not actor_paths:
+        return _clip_error(ValueError("actor_paths must be a non-empty list."))
+
+    base_seed = random_seed if random_seed not in (None, 0) else None
+    if top_k > 1 and base_seed is None:
+        base_seed = random.randrange(1, 2147483647)
+
+    settings = _solver_settings_payload(
+        scale_mode=scale_mode,
+        combine_mode=combine_mode,
+        weight_semantic=weight_semantic,
+        weight_geometry=weight_geometry,
+        scale_sensitivity=scale_sensitivity,
+        aspect_sensitivity=aspect_sensitivity,
+        normalize_semantic=normalize_semantic,
+        top_k=top_k,
+        final_score_threshold=final_score_threshold,
+    )
+
+    items: list[dict[str, Any]] = []
+    for index, actor_path in enumerate(actor_paths):
+        semantic = _call_unreal("get_semantic", {"actor_path": actor_path})
+        if not semantic.get("ok"):
+            items.append({"actor_path": actor_path, "status": "error", "error": semantic.get("error") or semantic.get("message") or "Failed to read semantic."})
+            continue
+
+        query = _auto_query(text, semantic)
+        if not query:
+            items.append({"actor_path": actor_path, "status": "no_query", "error": "No search text, actor semantic Tags, or actor label is available."})
+            continue
+
+        try:
+            search = _clip_search_assets(
+                text=query,
+                limit=candidate_limit,
+                project_names=project_names,
+                asset_types=asset_types,
+                filters=filters,
+                output_fields=_default_clip_output_fields(include_bounding_box=True),
+                score_threshold=score_threshold,
+                ef=ef,
+                collection=collection,
+            )
+        except Exception as exc:
+            error = _clip_error(exc)
+            items.append({"actor_path": actor_path, "status": "search_error", "query": query, "error": error.get("message") or error.get("error")})
+            continue
+
+        candidates, skipped = _candidates_from_hits(search.get("hits") or [])
+        if not candidates:
+            items.append({
+                "actor_path": actor_path,
+                "status": "no_candidates",
+                "query": query,
+                "search": _search_summary(search, candidates, skipped),
+                "error": "CLIP search returned no candidates with asset_path and bounding_box.",
+            })
+            continue
+
+        item_params: dict[str, Any] = {
+            "actor_path": actor_path,
+            "candidates": candidates,
+            "settings": settings,
+            "label": label,
+        }
+        if base_seed is not None and top_k > 1:
+            item_params["random_seed"] = base_seed + index
+
+        items.append({
+            "actor_path": actor_path,
+            "query": query,
+            "search": _search_summary(search, candidates, skipped),
+            "params": item_params,
+        })
+
+    bridge_items = [item.pop("params") for item in items if isinstance(item.get("params"), dict)]
+    if bridge_items:
+        bridge_result = _call_unreal("auto_assemble_batch", {"items": bridge_items, "auto_place": auto_place})
+        bridge_queue = list(bridge_result.get("items") or []) if bridge_result.get("ok") else []
+        for item in items:
+            if "params" in item:
+                continue
+            if item.get("status"):
+                continue
+            assembled = bridge_queue.pop(0) if bridge_queue else {"status": "error", "error": "Missing bridge result."}
+            item.update(assembled)
+        if not bridge_result.get("ok"):
+            for item in items:
+                if not item.get("status"):
+                    item["status"] = "error"
+                    item["error"] = bridge_result.get("error") or bridge_result.get("message") or "Batch bridge call failed."
+
+    succeeded = sum(1 for item in items if item.get("status") in {"placed", "solved"})
+    spawned_count = sum(1 for item in items if item.get("spawned"))
+    return {
+        "ok": True,
+        "status": "ok",
+        "items": items,
+        "actor_count": len(actor_paths),
+        "succeeded": succeeded,
+        "spawned_count": spawned_count,
+        "random_seed": base_seed,
+    }
+
+
+@mcp.tool()
+def unreal_solver_self_test() -> dict[str, Any]:
+    """Run the built-in synthetic OBB solver self-test inside Unreal."""
+    return _call_unreal("solver_self_test")
 
 
 def _call_unreal(command: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -513,6 +680,18 @@ def _call_unreal(command: str, params: dict[str, Any] | None = None) -> dict[str
             "error": str(exc),
             "bridge": bridge_settings(),
         }
+
+
+def _search_summary(search: dict[str, Any], candidates: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "collection_name": search.get("collection_name"),
+        "model": search.get("model"),
+        "search_time_ms": search.get("search_time_ms"),
+        "hit_count": search.get("count", 0),
+        "candidate_count": len(candidates),
+        "skipped": skipped,
+        "filters": search.get("filters"),
+    }
 
 
 def main() -> None:

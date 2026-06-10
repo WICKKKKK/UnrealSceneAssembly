@@ -11,6 +11,7 @@ from typing import Any
 import unreal
 
 from .scene_handlers import SCENE_HANDLERS
+from .solver_handlers import SOLVER_HANDLERS
 
 
 class CommandError(RuntimeError):
@@ -26,6 +27,7 @@ def handle_command(command: str, params: dict[str, Any] | None = None, context: 
         "get_project_info": _handle_get_project_info,
     }
     handlers.update(SCENE_HANDLERS)
+    handlers.update(SOLVER_HANDLERS)
 
     handler = handlers.get(command)
     if handler is None:

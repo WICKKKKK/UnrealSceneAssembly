@@ -20,5 +20,7 @@ public:
 private:
 	void RegisterMenus();
 	void OpenMCPControlPanel();
+	void OpenTestPanel();
 	TSharedRef<SDockTab> SpawnMCPControlPanelTab(const FSpawnTabArgs& SpawnTabArgs);
+	TSharedRef<SDockTab> SpawnTestPanelTab(const FSpawnTabArgs& SpawnTabArgs);
 };
