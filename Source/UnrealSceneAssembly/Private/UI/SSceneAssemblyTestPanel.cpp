@@ -9,6 +9,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Actor.h"
 #include "GenericPlatform/GenericWindow.h"
+#include "HAL/PlatformProcess.h"
 #include "IDetailsView.h"
 #include "IDesktopPlatform.h"
 #include "IImageWrapper.h"
@@ -22,6 +23,8 @@
 #include "PropertyEditorModule.h"
 #include "ScopedTransaction.h"
 #include "SceneCaptureLibrary.h"
+#include "SceneView.h"
+#include "ConvexVolume.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -35,6 +38,8 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SScaleBox.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/SWindow.h"
@@ -280,6 +285,10 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							[
 								TestMakeActionButton(LOCTEXT("SelectAllWhiteboxes", "全选白盒"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnSelectAllWhiteboxesClicked))
 							]
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
+							[
+								TestMakeActionButton(LOCTEXT("SelectVisibleWhiteboxes", "选择可视范围白盒"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnSelectVisibleWhiteboxesClicked))
+							]
 							+ SHorizontalBox::Slot().AutoWidth()
 							[
 								TestMakeActionButton(LOCTEXT("DeselectAll", "取消选择"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnDeselectClicked))
@@ -310,17 +319,14 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							]
 							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
 							[
-								SNew(SButton)
-								.Text(LOCTEXT("JumpCaptureCamera", "跳转相机视角"))
-								.IsEnabled(this, &SSceneAssemblyTestPanel::HasCaptureCamera)
-								.OnClicked(this, &SSceneAssemblyTestPanel::OnJumpToCaptureCameraClicked)
+								TestMakeActionButton(LOCTEXT("CaptureSelectedAesthetic", "截取选中白盒场景"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnCaptureSelectedAestheticReferenceClicked))
 							]
 							+ SHorizontalBox::Slot().AutoWidth()
 							[
 								SNew(SButton)
-								.Text(LOCTEXT("UploadConceptArt", "上传原画"))
-								.IsEnabled(this, &SSceneAssemblyTestPanel::CanUploadConceptArt)
-								.OnClicked(this, &SSceneAssemblyTestPanel::OnUploadConceptArtClicked)
+								.Text(LOCTEXT("JumpCaptureCamera", "跳转相机视角"))
+								.IsEnabled(this, &SSceneAssemblyTestPanel::HasCaptureCamera)
+								.OnClicked(this, &SSceneAssemblyTestPanel::OnJumpToCaptureCameraClicked)
 							]
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
@@ -341,37 +347,101 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 8.0f, 0.0f)
 							[
 								SNew(SVerticalBox)
-								+ SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Text(LOCTEXT("ScenePreviewLabel", "白盒截图"))]
-								+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+								+ SVerticalBox::Slot().AutoHeight()
 								[
-									SNew(SBox)
-									.HeightOverride(180.0f)
+									SNew(SHorizontalBox)
+									+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 									[
-										SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetSceneCaptureBrush)
+										SNew(STextBlock).Text(LOCTEXT("ScenePreviewLabel", "白盒截图"))
+									]
+									+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f, 0.0f, 0.0f)
+									[
+										SNew(SButton)
+										.Text(LOCTEXT("OpenSceneCaptureFolder", "打开目录"))
+										.IsEnabled(this, &SSceneAssemblyTestPanel::HasSceneCapturePath)
+										.OnClicked(this, &SSceneAssemblyTestPanel::OnOpenSceneCaptureFolderClicked)
 									]
 								]
-							]
-							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(8.0f, 0.0f, 8.0f, 0.0f)
-							[
-								SNew(SVerticalBox)
-								+ SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Text(LOCTEXT("IdPreviewLabel", "ID Map"))]
 								+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
 								[
 									SNew(SBox)
 									.HeightOverride(180.0f)
 									[
-										SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetIdMapBrush)
+										SNew(SScaleBox)
+										.Stretch(EStretch::ScaleToFit)
+										.StretchDirection(EStretchDirection::Both)
+										[
+											SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetSceneCaptureBrush)
+										]
 									]
 								]
 							]
 							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(8.0f, 0.0f, 0.0f, 0.0f)
 							[
 								SNew(SVerticalBox)
-								+ SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Text(LOCTEXT("ConceptPreviewLabel", "原画"))]
+								+ SVerticalBox::Slot().AutoHeight()
+								[
+									SNew(SHorizontalBox)
+									+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+									[
+										SNew(STextBlock).Text(LOCTEXT("IdPreviewLabel", "ID Map"))
+									]
+									+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f, 0.0f, 0.0f)
+									[
+										SNew(SButton)
+										.Text(LOCTEXT("OpenIdMapFolder", "打开目录"))
+										.IsEnabled(this, &SSceneAssemblyTestPanel::HasIdMapPath)
+										.OnClicked(this, &SSceneAssemblyTestPanel::OnOpenIdMapFolderClicked)
+									]
+								]
 								+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
 								[
 									SNew(SBox)
 									.HeightOverride(180.0f)
+									[
+										SNew(SScaleBox)
+										.Stretch(EStretch::ScaleToFit)
+										.StretchDirection(EStretchDirection::Both)
+										[
+											SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetIdMapBrush)
+										]
+									]
+								]
+							]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+								[
+									SNew(STextBlock).Text(LOCTEXT("ConceptPreviewLabel", "原画"))
+								]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f, 0.0f, 0.0f)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("OpenConceptArtFolder", "打开目录"))
+									.IsEnabled(this, &SSceneAssemblyTestPanel::HasConceptArtPath)
+									.OnClicked(this, &SSceneAssemblyTestPanel::OnOpenConceptArtFolderClicked)
+								]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(8.0f, 0.0f, 0.0f, 0.0f)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("UploadConceptArt", "上传原画"))
+									.IsEnabled(this, &SSceneAssemblyTestPanel::CanUploadConceptArt)
+									.OnClicked(this, &SSceneAssemblyTestPanel::OnUploadConceptArtClicked)
+								]
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+							[
+								SNew(SBox)
+								.HeightOverride(220.0f)
+								[
+									SNew(SScaleBox)
+									.Stretch(EStretch::ScaleToFit)
+									.StretchDirection(EStretchDirection::Both)
 									[
 										SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetConceptArtBrush)
 									]
@@ -660,6 +730,34 @@ bool SSceneAssemblyTestPanel::IsBlockoutActor(const AActor* Actor) const
 	return Actor->Tags.Contains(FName(TEXT("BlockoutActor")));
 }
 
+bool SSceneAssemblyTestPanel::IsActorInViewFrustum(const AActor* Actor) const
+{
+	if (!Actor)
+	{
+		return false;
+	}
+	if (!GCurrentLevelEditingViewportClient || !GCurrentLevelEditingViewportClient->Viewport)
+	{
+		return true;
+	}
+
+	FLevelEditorViewportClient* ViewportClient = GCurrentLevelEditingViewportClient;
+	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
+		ViewportClient->Viewport,
+		ViewportClient->GetScene(),
+		ViewportClient->EngineShowFlags).SetRealtimeUpdate(ViewportClient->IsRealtime()));
+	const FSceneView* View = ViewportClient->CalcSceneView(&ViewFamily);
+	if (!View)
+	{
+		return true;
+	}
+
+	FVector Origin = FVector::ZeroVector;
+	FVector Extent = FVector::ZeroVector;
+	Actor->GetActorBounds(false, Origin, Extent);
+	return View->ViewFrustum.IntersectBox(Origin, Extent);
+}
+
 void SSceneAssemblyTestPanel::CollectSelectedBlockoutActors(TArray<AActor*>& OutActors) const
 {
 	OutActors.Reset();
@@ -678,6 +776,73 @@ void SSceneAssemblyTestPanel::CollectSelectedBlockoutActors(TArray<AActor*>& Out
 			}
 		}
 	}
+}
+
+void SSceneAssemblyTestPanel::CollectVisibleBlockoutActors(TArray<AActor*>& OutActors) const
+{
+	OutActors.Reset();
+	if (!GEditor)
+	{
+		return;
+	}
+
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (IsBlockoutActor(Actor) && IsActorInViewFrustum(Actor))
+		{
+			OutActors.Add(Actor);
+		}
+	}
+}
+
+bool SSceneAssemblyTestPanel::CaptureAestheticReference(const TArray<AActor*>& TargetActors)
+{
+	if (TargetActors.IsEmpty())
+	{
+		LastResult = TEXT("当前相机可视范围内没有可截取的白盒 Actor。");
+		AppendLog(LastResult);
+		return false;
+	}
+
+	CaptureBaseName = TestTimestampBaseName();
+	CaptureOutputDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UnrealSceneAssembly"), TEXT("AestheticRef"), CaptureBaseName);
+	CapturedSceneImagePath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT("_scene.png"));
+	CapturedIdMapPath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT("_id.png"));
+	CapturedJsonPath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT(".json"));
+
+	if (!USceneCaptureLibrary::CaptureSceneAndIdMapFromActors(TargetActors, CaptureOutputDir, CaptureBaseName, 0, 0, true))
+	{
+		LastResult = TEXT("美学参考截取失败。请确认当前有活动透视视口且 ID 材质可用。");
+		AppendLog(LastResult);
+		return false;
+	}
+
+	LoadCaptureMetadataFromJson();
+	RefreshCaptureBrushes();
+	RefreshConceptBrush();
+	LastResult = FString::Printf(TEXT("已截取美学参考：%d 个白盒"), TargetActors.Num());
+	AppendLog(LastResult);
+	return true;
+}
+
+FReply SSceneAssemblyTestPanel::OpenContainingFolder(const FString& FilePath)
+{
+	if (!FilePath.IsEmpty())
+	{
+		const FString FolderPath = FPaths::ConvertRelativePathToFull(FPaths::GetPath(FilePath));
+		if (!FolderPath.IsEmpty())
+		{
+			FPlatformProcess::ExploreFolder(*FolderPath);
+		}
+	}
+	return FReply::Handled();
 }
 
 void SSceneAssemblyTestPanel::UpdateSelectionSummaryFromEditor()
@@ -717,12 +882,15 @@ FReply SSceneAssemblyTestPanel::OnSelectAllWhiteboxesClicked()
 	if (GEditor != nullptr)
 	{
 		TArray<AActor*> WhiteboxActors;
-		for (TActorIterator<AActor> It(GEditor->GetEditorWorldContext().World()); It; ++It)
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
 		{
-			AActor* Actor = *It;
-			if (IsBlockoutActor(Actor))
+			for (TActorIterator<AActor> It(World); It; ++It)
 			{
-				WhiteboxActors.Add(Actor);
+				AActor* Actor = *It;
+				if (IsBlockoutActor(Actor))
+				{
+					WhiteboxActors.Add(Actor);
+				}
 			}
 		}
 
@@ -732,8 +900,30 @@ FReply SSceneAssemblyTestPanel::OnSelectAllWhiteboxesClicked()
 		{
 			GEditor->SelectActor(Actor, true, false, true, true);
 		}
+		GEditor->NoteSelectionChange();
 		UpdateSelectionSummaryFromEditor();
 		LastResult = TEXT("已全选白盒。");
+	}
+	return FReply::Handled();
+}
+
+FReply SSceneAssemblyTestPanel::OnSelectVisibleWhiteboxesClicked()
+{
+	if (GEditor != nullptr)
+	{
+		TArray<AActor*> WhiteboxActors;
+		CollectVisibleBlockoutActors(WhiteboxActors);
+
+		const FScopedTransaction Transaction(LOCTEXT("SelectVisibleWhiteboxesTransaction", "Scene Assembly: Select Visible Whiteboxes"));
+		GEditor->SelectNone(false, true, false);
+		for (AActor* Actor : WhiteboxActors)
+		{
+			GEditor->SelectActor(Actor, true, false, true, true);
+		}
+		GEditor->NoteSelectionChange();
+		UpdateSelectionSummaryFromEditor();
+		LastResult = FString::Printf(TEXT("已选择可视范围白盒：%d 个。"), WhiteboxActors.Num());
+		AppendLog(LastResult);
 	}
 	return FReply::Handled();
 }
@@ -744,6 +934,7 @@ FReply SSceneAssemblyTestPanel::OnDeselectClicked()
 	{
 		const FScopedTransaction Transaction(LOCTEXT("DeselectAllTransaction", "Scene Assembly: Deselect All"));
 		GEditor->SelectNone(false, true, false);
+		GEditor->NoteSelectionChange();
 		UpdateSelectionSummaryFromEditor();
 		LastResult = TEXT("已取消选择。");
 	}
@@ -753,32 +944,40 @@ FReply SSceneAssemblyTestPanel::OnDeselectClicked()
 FReply SSceneAssemblyTestPanel::OnCaptureAestheticReferenceClicked()
 {
 	TArray<AActor*> TargetActors;
-	CollectSelectedBlockoutActors(TargetActors);
+	CollectVisibleBlockoutActors(TargetActors);
 	if (TargetActors.IsEmpty())
 	{
-		LastResult = TEXT("请先选择继承自 Blockout 基类的白盒 Actor。");
+		LastResult = TEXT("当前相机可视范围内没有 Blockout 白盒 Actor。");
 		AppendLog(LastResult);
 		return FReply::Handled();
 	}
 
-	CaptureBaseName = TestTimestampBaseName();
-	CaptureOutputDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UnrealSceneAssembly"), TEXT("AestheticRef"), CaptureBaseName);
-	CapturedSceneImagePath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT("_scene.png"));
-	CapturedIdMapPath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT("_id.png"));
-	CapturedJsonPath = FPaths::Combine(CaptureOutputDir, CaptureBaseName + TEXT(".json"));
+	CaptureAestheticReference(TargetActors);
+	return FReply::Handled();
+}
 
-	if (!USceneCaptureLibrary::CaptureSceneAndIdMapFromActors(TargetActors, CaptureOutputDir, CaptureBaseName, 0, 0, true))
+FReply SSceneAssemblyTestPanel::OnCaptureSelectedAestheticReferenceClicked()
+{
+	TArray<AActor*> SelectedActors;
+	CollectSelectedBlockoutActors(SelectedActors);
+
+	TArray<AActor*> TargetActors;
+	for (AActor* Actor : SelectedActors)
 	{
-		LastResult = TEXT("美学参考截取失败。请确认当前有活动透视视口且 ID 材质可用。");
+		if (IsActorInViewFrustum(Actor))
+		{
+			TargetActors.Add(Actor);
+		}
+	}
+
+	if (TargetActors.IsEmpty())
+	{
+		LastResult = TEXT("当前相机可视范围内没有已选中的 Blockout 白盒 Actor。");
 		AppendLog(LastResult);
 		return FReply::Handled();
 	}
 
-	LoadCaptureMetadataFromJson();
-	RefreshCaptureBrushes();
-	RefreshConceptBrush();
-	LastResult = FString::Printf(TEXT("已截取美学参考：%d 个白盒，%s"), TargetActors.Num(), *CapturedJsonPath);
-	AppendLog(LastResult);
+	CaptureAestheticReference(TargetActors);
 	return FReply::Handled();
 }
 
@@ -816,7 +1015,7 @@ FReply SSceneAssemblyTestPanel::OnUploadConceptArtClicked()
 	const void* ParentWindowHandle = nullptr;
 	if (FSlateApplication::IsInitialized())
 	{
-        const TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindBestParentWindowForDialogs(nullptr);
+		const TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindBestParentWindowForDialogs(nullptr);
 		ParentWindowHandle = ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid()
 			? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
 			: nullptr;
@@ -835,10 +1034,23 @@ FReply SSceneAssemblyTestPanel::OnUploadConceptArtClicked()
 	{
 		ConceptArtPath = SelectedFiles[0];
 		RefreshConceptBrush();
-		LastResult = FString::Printf(TEXT("已加载原画：%s"), *ConceptArtPath);
-		AppendLog(LastResult);
 	}
 	return FReply::Handled();
+}
+
+FReply SSceneAssemblyTestPanel::OnOpenSceneCaptureFolderClicked()
+{
+	return OpenContainingFolder(CapturedSceneImagePath);
+}
+
+FReply SSceneAssemblyTestPanel::OnOpenIdMapFolderClicked()
+{
+	return OpenContainingFolder(CapturedIdMapPath);
+}
+
+FReply SSceneAssemblyTestPanel::OnOpenConceptArtFolderClicked()
+{
+	return OpenContainingFolder(ConceptArtPath);
 }
 
 FReply SSceneAssemblyTestPanel::OnSolvePlaceClicked()
@@ -897,8 +1109,7 @@ FText SSceneAssemblyTestPanel::GetCaptureInfoText() const
 		return LOCTEXT("NoCaptureInfo", "尚未截取白盒场景。");
 	}
 	return FText::FromString(FString::Printf(
-		TEXT("捕获：%s\n分辨率：%dx%d\n相机：Loc(%.1f, %.1f, %.1f), Rot(%.1f, %.1f, %.1f), FOV %.1f"),
-		*CapturedJsonPath,
+		TEXT("分辨率：%dx%d\n相机：Loc(%.1f, %.1f, %.1f), Rot(%.1f, %.1f, %.1f), FOV %.1f"),
 		CaptureImageWidth,
 		CaptureImageHeight,
 		CaptureCameraLocation.X,
@@ -916,7 +1127,7 @@ FText SSceneAssemblyTestPanel::GetConceptArtInfoText() const
 	{
 		return LOCTEXT("NoConceptArtInfo", "尚未上传原画。");
 	}
-	return FText::FromString(FString::Printf(TEXT("原画：%s%s"), *ConceptArtPath, CaptureImageWidth > 0 && CaptureImageHeight > 0 ? TEXT("（显示/裁剪时按捕获分辨率自动 resize）") : TEXT("")));
+	return FText::GetEmpty();
 }
 
 const FSlateBrush* SSceneAssemblyTestPanel::GetSceneCaptureBrush() const
@@ -937,6 +1148,21 @@ const FSlateBrush* SSceneAssemblyTestPanel::GetConceptArtBrush() const
 bool SSceneAssemblyTestPanel::HasCaptureCamera() const
 {
 	return bHasCaptureCamera;
+}
+
+bool SSceneAssemblyTestPanel::HasSceneCapturePath() const
+{
+	return !CapturedSceneImagePath.IsEmpty();
+}
+
+bool SSceneAssemblyTestPanel::HasIdMapPath() const
+{
+	return !CapturedIdMapPath.IsEmpty();
+}
+
+bool SSceneAssemblyTestPanel::HasConceptArtPath() const
+{
+	return !ConceptArtPath.IsEmpty();
 }
 
 bool SSceneAssemblyTestPanel::CanUploadConceptArt() const

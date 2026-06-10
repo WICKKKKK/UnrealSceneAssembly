@@ -30,13 +30,22 @@ private:
 	void RefreshCaptureBrushes();
 	void RefreshConceptBrush();
 	bool IsBlockoutActor(const AActor* Actor) const;
+	bool IsActorInViewFrustum(const AActor* Actor) const;
 	void CollectSelectedBlockoutActors(TArray<AActor*>& OutActors) const;
+	void CollectVisibleBlockoutActors(TArray<AActor*>& OutActors) const;
+	bool CaptureAestheticReference(const TArray<AActor*>& TargetActors);
+	FReply OpenContainingFolder(const FString& FilePath);
 
 	FReply OnSelectAllWhiteboxesClicked();
+	FReply OnSelectVisibleWhiteboxesClicked();
 	FReply OnDeselectClicked();
 	FReply OnCaptureAestheticReferenceClicked();
+	FReply OnCaptureSelectedAestheticReferenceClicked();
 	FReply OnJumpToCaptureCameraClicked();
 	FReply OnUploadConceptArtClicked();
+	FReply OnOpenSceneCaptureFolderClicked();
+	FReply OnOpenIdMapFolderClicked();
+	FReply OnOpenConceptArtFolderClicked();
 	FReply OnSolvePlaceClicked();
 	FReply OnCleanupClicked();
 
@@ -49,6 +58,9 @@ private:
 	const FSlateBrush* GetIdMapBrush() const;
 	const FSlateBrush* GetConceptArtBrush() const;
 	bool HasCaptureCamera() const;
+	bool HasSceneCapturePath() const;
+	bool HasIdMapPath() const;
+	bool HasConceptArtPath() const;
 	bool CanUploadConceptArt() const;
 	bool CanRun() const;
 
