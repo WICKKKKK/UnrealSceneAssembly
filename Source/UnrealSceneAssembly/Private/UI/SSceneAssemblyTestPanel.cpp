@@ -34,6 +34,7 @@
 #include "EngineUtils.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
@@ -106,6 +107,36 @@ FString TestScaleModeToString(ESceneAssemblyScaleMode ScaleMode)
 FString TestCombineModeToString(ESceneAssemblyScoreCombineMode CombineMode)
 {
 	return CombineMode == ESceneAssemblyScoreCombineMode::Additive ? TEXT("Additive") : TEXT("Multiplicative");
+}
+
+FString TestRetrievalModelToString(ESceneAssemblyRetrievalModel Model)
+{
+	return Model == ESceneAssemblyRetrievalModel::DINOv3 ? TEXT("DINOv3") : TEXT("CLIP");
+}
+
+FString TestCropBboxSourceToString(ESceneAssemblyCropBboxSource Source)
+{
+	return Source == ESceneAssemblyCropBboxSource::VisiblePixels ? TEXT("pixel_bbox") : TEXT("full_bbox");
+}
+
+FString TestCropBboxSourceDisplayName(ESceneAssemblyCropBboxSource Source)
+{
+	return Source == ESceneAssemblyCropBboxSource::VisiblePixels ? TEXT("pixel_bbox") : TEXT("full_bbox");
+}
+
+bool TestReadBboxField(const TSharedPtr<FJsonObject>& EntryObject, const TCHAR* FieldName, FIntRect& OutBounds)
+{
+	const TArray<TSharedPtr<FJsonValue>>* BboxValues = nullptr;
+	if (!EntryObject.IsValid() || !EntryObject->TryGetArrayField(FieldName, BboxValues) || BboxValues == nullptr || BboxValues->Num() != 4)
+	{
+		return false;
+	}
+
+	OutBounds.Min.X = static_cast<int32>((*BboxValues)[0]->AsNumber());
+	OutBounds.Min.Y = static_cast<int32>((*BboxValues)[1]->AsNumber());
+	OutBounds.Max.X = static_cast<int32>((*BboxValues)[2]->AsNumber());
+	OutBounds.Max.Y = static_cast<int32>((*BboxValues)[3]->AsNumber());
+	return OutBounds.Min.X <= OutBounds.Max.X && OutBounds.Min.Y <= OutBounds.Max.Y;
 }
 
 FString TestTimestampBaseName()
@@ -215,6 +246,22 @@ bool TestJsonRotator(const TSharedPtr<FJsonObject>& Object, FRotator& OutValue)
 	OutValue.Roll = TestGetNumberField(Object, TEXT("roll"), 0.0);
 	return true;
 }
+
+FString TestSanitizeForFileName(FString Value)
+{
+	if (Value.IsEmpty())
+	{
+		return TEXT("Actor");
+	}
+	for (TCHAR& Ch : Value)
+	{
+		if (!FChar::IsAlnum(Ch))
+		{
+			Ch = TEXT('_');
+		}
+	}
+	return Value.Left(80);
+}
 }
 
 void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
@@ -279,7 +326,10 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							]
 							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
 							[
-								TestMakeActionButton(LOCTEXT("CleanupOnly", "仅清理"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnCleanupClicked))
+								SNew(SButton)
+								.Text(LOCTEXT("CleanupOnly", "仅清理"))
+								.IsEnabled(this, &SSceneAssemblyTestPanel::CanCleanup)
+								.OnClicked(this, &SSceneAssemblyTestPanel::OnCleanupClicked)
 							]
 							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
 							[
@@ -293,6 +343,31 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							[
 								TestMakeActionButton(LOCTEXT("DeselectAll", "取消选择"), FOnClicked::CreateSP(this, &SSceneAssemblyTestPanel::OnDeselectClicked))
 							]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
+							[
+								SNew(SButton)
+								.Text(LOCTEXT("CancelAssembly", "取消任务"))
+								.IsEnabled(this, &SSceneAssemblyTestPanel::CanCancelJob)
+								.OnClicked(this, &SSceneAssemblyTestPanel::OnCancelJobClicked)
+							]
+							+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+							[
+								SNew(SProgressBar)
+								.Visibility(this, &SSceneAssemblyTestPanel::GetJobProgressVisibility)
+								.Percent(this, &SSceneAssemblyTestPanel::GetJobProgress)
+							]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+						[
+							SNew(STextBlock)
+							.Visibility(this, &SSceneAssemblyTestPanel::GetJobProgressVisibility)
+							.Text(this, &SSceneAssemblyTestPanel::GetJobProgressText)
+							.ColorAndOpacity(FSlateColor(TestMutedColor))
+							.AutoWrapText(true)
 						]
 					)
 				]
@@ -446,6 +521,43 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 										SNew(SImage).Image(this, &SSceneAssemblyTestPanel::GetConceptArtBrush)
 									]
 								]
+								]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+						[
+							SNew(SExpandableArea)
+							.InitiallyCollapsed(true)
+							.HeaderContent()
+							[
+								SNew(STextBlock)
+								.Text(this, &SSceneAssemblyTestPanel::GetCropPreviewSummaryText)
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+							]
+							.BodyContent()
+							[
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+								[
+									SNew(SHorizontalBox)
+									+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
+									[
+										SNew(SButton)
+										.Text(LOCTEXT("RefreshCropPreviews", "刷新预览"))
+										.IsEnabled(this, &SSceneAssemblyTestPanel::CanRun)
+										.OnClicked(this, &SSceneAssemblyTestPanel::OnRefreshCropPreviewsClicked)
+									]
+									+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+									[
+										SNew(STextBlock)
+									.Text(LOCTEXT("CropPreviewHint", "用于检查所选 bbox 与原画是否对齐；切换裁剪框来源或修改裁剪框扩展后点击刷新预览。"))
+										.ColorAndOpacity(FSlateColor(TestMutedColor))
+										.AutoWrapText(true)
+									]
+								]
+								+ SVerticalBox::Slot().AutoHeight()
+								[
+									SAssignNew(CropPreviewContainer, SVerticalBox)
+								]
 							]
 						]
 					)
@@ -486,7 +598,8 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 	];
 
 	UpdateSelectionSummaryFromEditor();
-	RegisterActiveTimer(0.5f, FWidgetActiveTimerDelegate::CreateSP(this, &SSceneAssemblyTestPanel::RefreshSelectionTick));
+	RefreshCropPreviewWidget();
+	RegisterActiveTimer(0.5f, FWidgetActiveTimerDelegate::CreateSP(this, &SSceneAssemblyTestPanel::RefreshStatusTick));
 }
 
 bool SSceneAssemblyTestPanel::CallController(const FString& FunctionCall, TSharedPtr<FJsonObject>& OutObject)
@@ -511,7 +624,10 @@ FString SSceneAssemblyTestPanel::BuildPayloadJson() const
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetStringField(TEXT("capture_json_path"), CapturedJsonPath);
 	Root->SetStringField(TEXT("concept_art_path"), ConceptArtPath);
-	Root->SetNumberField(TEXT("candidate_limit"), CurrentSettings ? CurrentSettings->CandidateLimit : 50);
+	Root->SetStringField(TEXT("retrieval_model"), CurrentSettings ? TestRetrievalModelToString(CurrentSettings->RetrievalModel) : TEXT("DINOv3"));
+	Root->SetStringField(TEXT("crop_bbox_source"), CurrentSettings ? TestCropBboxSourceToString(CurrentSettings->CropBboxSource) : TEXT("full_bbox"));
+	Root->SetNumberField(TEXT("crop_expand_pixels"), CurrentSettings ? FMath::Max(0, CurrentSettings->CropExpandPixels) : 20);
+	Root->SetNumberField(TEXT("candidate_limit"), CurrentSettings ? CurrentSettings->CandidateLimit : 20);
 	Root->SetNumberField(TEXT("score_threshold"), CurrentSettings ? CurrentSettings->ScoreThreshold : 0.0f);
 	Root->SetStringField(TEXT("result_tag"), GetResultTag());
 	Root->SetBoolField(TEXT("whitebox_only"), CurrentSettings ? CurrentSettings->bWhiteboxOnly : true);
@@ -635,6 +751,89 @@ void SSceneAssemblyTestPanel::ApplyRunResponse(const TSharedPtr<FJsonObject>& Re
 	AppendLog(Lines);
 }
 
+void SSceneAssemblyTestPanel::ApplyAsyncStatusResponse(const TSharedPtr<FJsonObject>& Response)
+{
+	if (!Response.IsValid())
+	{
+		return;
+	}
+
+	JobState = TestGetStringField(Response, TEXT("state"), JobState);
+	JobTotal = TestGetIntField(Response, TEXT("total"), JobTotal);
+	JobCompleted = TestGetIntField(Response, TEXT("completed"), JobCompleted);
+	JobSpawned = TestGetIntField(Response, TEXT("spawned_count"), JobSpawned);
+	JobSucceeded = TestGetIntField(Response, TEXT("succeeded"), JobSucceeded);
+	JobFailed = TestGetIntField(Response, TEXT("failed"), JobFailed);
+	bJobRunning = TestGetBoolField(Response, TEXT("running"), JobState == TEXT("running") || JobState == TEXT("preparing") || JobState == TEXT("cancelling"));
+
+	if (JobState == TEXT("running") || JobState == TEXT("preparing") || JobState == TEXT("cancelling"))
+	{
+		LastResult = FString::Printf(TEXT("后台装配中：%d/%d，已摆放 %d。"), JobCompleted, JobTotal, JobSpawned);
+	}
+	else if (JobState == TEXT("done") || JobState == TEXT("cancelled") || JobState == TEXT("error"))
+	{
+		LastResult = FString::Printf(TEXT("后台装配%s：%d/%d，已摆放 %d，失败 %d。"), JobState == TEXT("done") ? TEXT("完成") : (JobState == TEXT("cancelled") ? TEXT("已取消") : TEXT("失败")), JobCompleted, JobTotal, JobSpawned, JobFailed);
+	}
+
+	FString Lines = LastResult;
+	const TSharedPtr<FJsonObject> Cleanup = TestGetObjectField(Response, TEXT("cleanup"));
+	if (Cleanup.IsValid())
+	{
+		Lines += FString::Printf(TEXT("\n启动时已清理：%d 个旧结果。"), TestGetIntField(Cleanup, TEXT("deleted_count"), 0));
+	}
+
+	const FString Error = TestGetStringField(Response, TEXT("error"));
+	if (!Error.IsEmpty())
+	{
+		Lines += FString::Printf(TEXT("\n错误：%s"), *Error);
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	if (Response->TryGetArrayField(TEXT("items"), Items))
+	{
+		int32 ItemIndex = 0;
+		for (const TSharedPtr<FJsonValue>& ItemValue : *Items)
+		{
+			const TSharedPtr<FJsonObject> Item = ItemValue.IsValid() ? ItemValue->AsObject() : nullptr;
+			if (!Item.IsValid())
+			{
+				continue;
+			}
+
+			const TSharedPtr<FJsonObject> Actor = TestGetObjectField(Item, TEXT("actor"));
+			const TSharedPtr<FJsonObject> Search = TestGetObjectField(Item, TEXT("search"));
+			const int32 HitCount = Search.IsValid() ? TestGetIntField(Search, TEXT("hit_count"), 0) : 0;
+			const int32 CandidateCount = Search.IsValid() ? TestGetIntField(Search, TEXT("candidate_count"), 0) : 0;
+			Lines += FString::Printf(
+				TEXT("\n\n%d. %s | 状态：%s | 图搜命中：%d | 候选：%d"),
+				ItemIndex + 1,
+				*TestGetStringField(Actor, TEXT("label"), TEXT("Actor")),
+				*TestGetStringField(Item, TEXT("status"), TEXT("unknown")),
+				HitCount,
+				CandidateCount);
+
+			const FString ItemError = TestGetStringField(Item, TEXT("error"));
+			if (!ItemError.IsEmpty())
+			{
+				Lines += FString::Printf(TEXT("\n  原因：%s"), *ItemError);
+			}
+			++ItemIndex;
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* LogLines = nullptr;
+	if (Response->TryGetArrayField(TEXT("log_lines"), LogLines) && LogLines->Num() > 0)
+	{
+		Lines += TEXT("\n\n任务日志：");
+		for (const TSharedPtr<FJsonValue>& LineValue : *LogLines)
+		{
+			Lines += FString::Printf(TEXT("\n  %s"), *LineValue->AsString());
+		}
+	}
+
+	AppendLog(Lines);
+}
+
 void SSceneAssemblyTestPanel::AppendLog(const FString& Message)
 {
 	LogText = Message;
@@ -709,6 +908,170 @@ void SSceneAssemblyTestPanel::RefreshConceptBrush()
 	if (!ConceptArtPath.IsEmpty())
 	{
 		ConceptArtBrush = TestLoadBrushFromImage(ConceptArtPath, TEXT("Concept"), CaptureImageWidth, CaptureImageHeight);
+	}
+}
+
+FString SSceneAssemblyTestPanel::CropPreviewDirectory() const
+{
+	return CaptureOutputDir.IsEmpty() ? FString() : FPaths::Combine(CaptureOutputDir, TEXT("actor_crops"));
+}
+
+FString SSceneAssemblyTestPanel::CropPreviewPathForActor(const FString& ActorPath, const int32 Index) const
+{
+	return FPaths::Combine(CropPreviewDirectory(), FString::Printf(TEXT("%03d_%s.png"), Index + 1, *TestSanitizeForFileName(ActorPath)));
+}
+
+void SSceneAssemblyTestPanel::RebuildCropPreviews()
+{
+	CropPreviews.Reset();
+	if (CapturedJsonPath.IsEmpty() || ConceptArtPath.IsEmpty() || CaptureImageWidth <= 0 || CaptureImageHeight <= 0)
+	{
+		RefreshCropPreviewWidget();
+		return;
+	}
+
+	FString JsonText;
+	if (!FFileHelper::LoadFileToString(JsonText, *CapturedJsonPath))
+	{
+		AppendLog(FString::Printf(TEXT("无法读取裁剪预览 JSON：%s"), *CapturedJsonPath));
+		RefreshCropPreviewWidget();
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Root;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		AppendLog(FString::Printf(TEXT("裁剪预览 JSON 无法解析：%s"), *CapturedJsonPath));
+		RefreshCropPreviewWidget();
+		return;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+	if (!Root->TryGetArrayField(TEXT("id_map"), Entries) || Entries == nullptr)
+	{
+		RefreshCropPreviewWidget();
+		return;
+	}
+
+	const USceneAssemblyTestSettings* CurrentSettings = Settings.Get();
+	const int32 ExpandPixels = CurrentSettings ? FMath::Max(0, CurrentSettings->CropExpandPixels) : 20;
+	const ESceneAssemblyCropBboxSource BboxSource = CurrentSettings ? CurrentSettings->CropBboxSource : ESceneAssemblyCropBboxSource::FullProjected;
+	const TCHAR* BboxFieldName = BboxSource == ESceneAssemblyCropBboxSource::VisiblePixels ? TEXT("pixel_bbox") : TEXT("full_bbox");
+	int32 EntryIndex = 0;
+	for (const TSharedPtr<FJsonValue>& Value : *Entries)
+	{
+		const TSharedPtr<FJsonObject> EntryObject = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!EntryObject.IsValid())
+		{
+			continue;
+		}
+
+		FIntRect PixelBounds;
+		if (!TestReadBboxField(EntryObject, BboxFieldName, PixelBounds))
+		{
+			continue;
+		}
+
+		const FString ActorPath = TestGetStringField(EntryObject, TEXT("actor_path"), FString());
+		if (ActorPath.IsEmpty())
+		{
+			continue;
+		}
+
+		const FString CropPath = CropPreviewPathForActor(ActorPath, EntryIndex);
+		if (!USceneCaptureLibrary::CropImageRegionToFile(ConceptArtPath, CaptureImageWidth, CaptureImageHeight, PixelBounds.Min.X, PixelBounds.Min.Y, PixelBounds.Max.X, PixelBounds.Max.Y, ExpandPixels, CropPath))
+		{
+			++EntryIndex;
+			continue;
+		}
+
+		TSharedPtr<FCropPreviewEntry> Preview = MakeShared<FCropPreviewEntry>();
+		Preview->ActorPath = ActorPath;
+		Preview->ActorLabel = FPaths::GetBaseFilename(ActorPath);
+		Preview->CropPath = CropPath;
+		Preview->PixelBounds = PixelBounds;
+		Preview->Brush = TestLoadBrushFromImage(CropPath, FString::Printf(TEXT("Crop_%d"), EntryIndex));
+		CropPreviews.Add(Preview);
+		++EntryIndex;
+	}
+
+	RefreshCropPreviewWidget();
+}
+
+void SSceneAssemblyTestPanel::RefreshCropPreviewWidget()
+{
+	if (!CropPreviewContainer.IsValid())
+	{
+		return;
+	}
+
+	CropPreviewContainer->ClearChildren();
+	if (CropPreviews.IsEmpty())
+	{
+		CropPreviewContainer->AddSlot()
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("NoCropPreviews", "暂无裁剪预览。请先截取白盒场景并上传原画。"))
+			.ColorAndOpacity(FSlateColor(TestMutedColor))
+			.AutoWrapText(true)
+		];
+		return;
+	}
+
+	for (const TSharedPtr<FCropPreviewEntry>& Preview : CropPreviews)
+	{
+		if (!Preview.IsValid())
+		{
+			continue;
+		}
+
+		const FString ActorPath = Preview->ActorPath;
+		CropPreviewContainer->AddSlot()
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 10.0f, 0.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(128.0f)
+				.HeightOverride(96.0f)
+				[
+					SNew(SScaleBox)
+					.Stretch(EStretch::ScaleToFit)
+					.StretchDirection(EStretchDirection::Both)
+					[
+						SNew(SImage).Image(Preview->Brush.IsValid() ? Preview->Brush.Get() : FAppStyle::GetBrush("Brushes.Recessed"))
+					]
+				]
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(FString::Printf(
+					TEXT("%s\n[%d,%d,%d,%d]"),
+					*Preview->ActorLabel,
+					Preview->PixelBounds.Min.X,
+					Preview->PixelBounds.Min.Y,
+					Preview->PixelBounds.Max.X,
+					Preview->PixelBounds.Max.Y)))
+				.AutoWrapText(true)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("SelectPreviewActor", "选择"))
+				.OnClicked(this, &SSceneAssemblyTestPanel::OnSelectPreviewActorClicked, ActorPath)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("FocusPreviewActor", "Focus"))
+				.OnClicked(this, &SSceneAssemblyTestPanel::OnFocusPreviewActorClicked, ActorPath)
+			]
+		];
 	}
 }
 
@@ -827,6 +1190,7 @@ bool SSceneAssemblyTestPanel::CaptureAestheticReference(const TArray<AActor*>& T
 	LoadCaptureMetadataFromJson();
 	RefreshCaptureBrushes();
 	RefreshConceptBrush();
+	RebuildCropPreviews();
 	LastResult = FString::Printf(TEXT("已截取美学参考：%d 个白盒"), TargetActors.Num());
 	AppendLog(LastResult);
 	return true;
@@ -871,9 +1235,17 @@ void SSceneAssemblyTestPanel::UpdateSelectionSummaryFromEditor()
 	SelectionSummary = FString::Printf(TEXT("已选 %d 个 Actor（白盒 %d 个）。"), SelectedCount, SelectedWhiteboxCount);
 }
 
-EActiveTimerReturnType SSceneAssemblyTestPanel::RefreshSelectionTick(double InCurrentTime, float InDeltaTime)
+EActiveTimerReturnType SSceneAssemblyTestPanel::RefreshStatusTick(double InCurrentTime, float InDeltaTime)
 {
 	UpdateSelectionSummaryFromEditor();
+	if (bJobRunning)
+	{
+		TSharedPtr<FJsonObject> Response;
+		if (CallController(TEXT("poll_assembly_status_json()"), Response))
+		{
+			ApplyAsyncStatusResponse(Response);
+		}
+	}
 	return EActiveTimerReturnType::Continue;
 }
 
@@ -1034,6 +1406,7 @@ FReply SSceneAssemblyTestPanel::OnUploadConceptArtClicked()
 	{
 		ConceptArtPath = SelectedFiles[0];
 		RefreshConceptBrush();
+		RebuildCropPreviews();
 	}
 	return FReply::Handled();
 }
@@ -1053,16 +1426,78 @@ FReply SSceneAssemblyTestPanel::OnOpenConceptArtFolderClicked()
 	return OpenContainingFolder(ConceptArtPath);
 }
 
+FReply SSceneAssemblyTestPanel::OnRefreshCropPreviewsClicked()
+{
+	RebuildCropPreviews();
+	LastResult = FString::Printf(TEXT("已刷新裁剪预览：%d 张。"), CropPreviews.Num());
+	AppendLog(LastResult);
+	return FReply::Handled();
+}
+
+FReply SSceneAssemblyTestPanel::OnSelectPreviewActorClicked(FString ActorPath)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("actor_path"), ActorPath);
+	FString PayloadJson;
+	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadJson);
+	FJsonSerializer::Serialize(Root, Writer);
+	FTCHARToUTF8 PayloadUtf8(*PayloadJson);
+	const FString PayloadBase64 = FBase64::Encode(reinterpret_cast<const uint8*>(PayloadUtf8.Get()), PayloadUtf8.Length());
+
+	TSharedPtr<FJsonObject> Response;
+	if (CallController(FString::Printf(TEXT("select_actor_by_path_json('%s')"), *PayloadBase64), Response))
+	{
+		LastResult = TEXT("已选择裁剪预览对应白盒。");
+		UpdateSelectionSummaryFromEditor();
+	}
+	return FReply::Handled();
+}
+
+FReply SSceneAssemblyTestPanel::OnFocusPreviewActorClicked(FString ActorPath)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("actor_path"), ActorPath);
+	FString PayloadJson;
+	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadJson);
+	FJsonSerializer::Serialize(Root, Writer);
+	FTCHARToUTF8 PayloadUtf8(*PayloadJson);
+	const FString PayloadBase64 = FBase64::Encode(reinterpret_cast<const uint8*>(PayloadUtf8.Get()), PayloadUtf8.Length());
+
+	TSharedPtr<FJsonObject> Response;
+	if (CallController(FString::Printf(TEXT("focus_actor_by_path_json('%s')"), *PayloadBase64), Response))
+	{
+		LastResult = TEXT("已选择并 Focus 裁剪预览对应白盒。");
+		UpdateSelectionSummaryFromEditor();
+	}
+	return FReply::Handled();
+}
+
 FReply SSceneAssemblyTestPanel::OnSolvePlaceClicked()
 {
+	if (bJobRunning)
+	{
+		LastResult = TEXT("后台装配任务正在运行。");
+		AppendLog(LastResult);
+		return FReply::Handled();
+	}
 	UpdateSelectionSummaryFromEditor();
 	const FString PayloadJson = BuildPayloadJson();
 	FTCHARToUTF8 PayloadUtf8(*PayloadJson);
 	const FString PayloadBase64 = FBase64::Encode(reinterpret_cast<const uint8*>(PayloadUtf8.Get()), PayloadUtf8.Length());
 	TSharedPtr<FJsonObject> Response;
-	if (CallController(FString::Printf(TEXT("run_assembly_test_json('%s')"), *PayloadBase64), Response))
+	if (CallController(FString::Printf(TEXT("start_async_assembly_json('%s')"), *PayloadBase64), Response))
 	{
-		ApplyRunResponse(Response);
+		ApplyAsyncStatusResponse(Response);
+	}
+	return FReply::Handled();
+}
+
+FReply SSceneAssemblyTestPanel::OnCancelJobClicked()
+{
+	TSharedPtr<FJsonObject> Response;
+	if (CallController(TEXT("cancel_assembly_json()"), Response))
+	{
+		ApplyAsyncStatusResponse(Response);
 	}
 	return FReply::Handled();
 }
@@ -1145,6 +1580,13 @@ const FSlateBrush* SSceneAssemblyTestPanel::GetConceptArtBrush() const
 	return ConceptArtBrush.IsValid() ? ConceptArtBrush.Get() : FAppStyle::GetBrush("Brushes.Recessed");
 }
 
+FText SSceneAssemblyTestPanel::GetCropPreviewSummaryText() const
+{
+	const USceneAssemblyTestSettings* CurrentSettings = Settings.Get();
+	const ESceneAssemblyCropBboxSource BboxSource = CurrentSettings ? CurrentSettings->CropBboxSource : ESceneAssemblyCropBboxSource::FullProjected;
+	return FText::FromString(FString::Printf(TEXT("逐 Actor 裁剪预览（%s，%d 张）"), *TestCropBboxSourceDisplayName(BboxSource), CropPreviews.Num()));
+}
+
 bool SSceneAssemblyTestPanel::HasCaptureCamera() const
 {
 	return bHasCaptureCamera;
@@ -1172,7 +1614,52 @@ bool SSceneAssemblyTestPanel::CanUploadConceptArt() const
 
 bool SSceneAssemblyTestPanel::CanRun() const
 {
-	return !CapturedJsonPath.IsEmpty() && !ConceptArtPath.IsEmpty();
+	return !bJobRunning && !CapturedJsonPath.IsEmpty() && !ConceptArtPath.IsEmpty();
+}
+
+bool SSceneAssemblyTestPanel::CanCleanup() const
+{
+	return !bJobRunning;
+}
+
+bool SSceneAssemblyTestPanel::CanCancelJob() const
+{
+	return bJobRunning;
+}
+
+TOptional<float> SSceneAssemblyTestPanel::GetJobProgress() const
+{
+	return JobTotal > 0 ? TOptional<float>(FMath::Clamp(static_cast<float>(JobCompleted) / static_cast<float>(JobTotal), 0.0f, 1.0f)) : TOptional<float>(0.0f);
+}
+
+FText SSceneAssemblyTestPanel::GetJobProgressText() const
+{
+	if (JobState == TEXT("idle") || JobTotal <= 0)
+	{
+		return LOCTEXT("NoAssemblyJobProgress", "暂无后台装配任务。");
+	}
+	if (bJobRunning)
+	{
+		return FText::FromString(FString::Printf(TEXT("后台求解中：%d/%d | 已摆放 %d | 失败 %d"), JobCompleted, JobTotal, JobSpawned, JobFailed));
+	}
+	if (JobState == TEXT("done"))
+	{
+		return FText::FromString(FString::Printf(TEXT("完成：%d/%d | 已摆放 %d | 失败 %d"), JobCompleted, JobTotal, JobSpawned, JobFailed));
+	}
+	if (JobState == TEXT("cancelled"))
+	{
+		return FText::FromString(FString::Printf(TEXT("已取消：%d/%d | 已摆放 %d | 失败 %d"), JobCompleted, JobTotal, JobSpawned, JobFailed));
+	}
+	if (JobState == TEXT("error"))
+	{
+		return FText::FromString(FString::Printf(TEXT("失败：%d/%d | 已摆放 %d | 失败 %d"), JobCompleted, JobTotal, JobSpawned, JobFailed));
+	}
+	return FText::FromString(FString::Printf(TEXT("%s：%d/%d | 已摆放 %d"), *JobState, JobCompleted, JobTotal, JobSpawned));
+}
+
+EVisibility SSceneAssemblyTestPanel::GetJobProgressVisibility() const
+{
+	return (bJobRunning || JobState == TEXT("done") || JobState == TEXT("cancelled") || JobState == TEXT("error")) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FString SSceneAssemblyTestPanel::GetResultTag() const

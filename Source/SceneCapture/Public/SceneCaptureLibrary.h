@@ -31,5 +31,8 @@ public:
 	static bool CaptureSceneAndIdMapFast(const FString& OutputDir, const FString& BaseName, const TArray<TSubclassOf<AActor>>& TargetClasses, int32 Width = 0, int32 Height = 0, bool bOnlyVisibleTargets = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Scene Capture", meta = (DisplayName = "Crop Image Region To Base64"))
-	static void CropImageRegionToBase64(const FString& SourceImagePath, int32 RefWidth, int32 RefHeight, int32 XMin, int32 YMin, int32 XMax, int32 YMax, FString& OutDataUri);
+	static void CropImageRegionToBase64(const FString& SourceImagePath, int32 RefWidth, int32 RefHeight, int32 XMin, int32 YMin, int32 XMax, int32 YMax, int32 ExpandPixels, FString& OutDataUri);
+
+	UFUNCTION(BlueprintCallable, Category = "Scene Capture", meta = (DisplayName = "Crop Image Region To File"))
+	static bool CropImageRegionToFile(const FString& SourceImagePath, int32 RefWidth, int32 RefHeight, int32 XMin, int32 YMin, int32 XMax, int32 YMax, int32 ExpandPixels, const FString& OutPngPath);
 };

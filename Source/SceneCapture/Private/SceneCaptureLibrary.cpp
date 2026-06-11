@@ -20,6 +20,7 @@
 #include "IImageWrapperModule.h"
 #include "ImageUtils.h"
 #include "LevelEditorViewport.h"
+#include "Math/PerspectiveMatrix.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -32,6 +33,7 @@
 #include "RenderingThread.h"
 #include "RHI.h"
 #include "SceneCaptureTypes.h"
+#include "SceneView.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UnrealClient.h"
@@ -61,6 +63,11 @@ struct FIdMapEntry
 	int32 PixelMinY = 0;
 	int32 PixelMaxX = 0;
 	int32 PixelMaxY = 0;
+	bool bHasFullBounds = false;
+	int32 FullMinX = 0;
+	int32 FullMinY = 0;
+	int32 FullMaxX = 0;
+	int32 FullMaxY = 0;
 };
 
 struct FMaterialOverrideRecord
@@ -269,6 +276,20 @@ TArray<TSharedPtr<FJsonValue>> MakeIdMapJson(const TArray<FIdMapEntry>& Entries)
 		{
 			EntryJson->SetField(TEXT("pixel_bbox"), MakeShared<FJsonValueNull>());
 		}
+
+		if (Entry.bHasFullBounds)
+		{
+			TArray<TSharedPtr<FJsonValue>> FullBoundsJson;
+			FullBoundsJson.Add(MakeShared<FJsonValueNumber>(Entry.FullMinX));
+			FullBoundsJson.Add(MakeShared<FJsonValueNumber>(Entry.FullMinY));
+			FullBoundsJson.Add(MakeShared<FJsonValueNumber>(Entry.FullMaxX));
+			FullBoundsJson.Add(MakeShared<FJsonValueNumber>(Entry.FullMaxY));
+			EntryJson->SetArrayField(TEXT("full_bbox"), FullBoundsJson);
+		}
+		else
+		{
+			EntryJson->SetField(TEXT("full_bbox"), MakeShared<FJsonValueNull>());
+		}
 		JsonEntries.Add(MakeShared<FJsonValueObject>(EntryJson));
 	}
 
@@ -424,6 +445,49 @@ bool CropBitmapRegion(const TArray<FColor>& SourcePixels, const int32 SourceWidt
 		const int32 DestIndex = Row * OutWidth;
 		FMemory::Memcpy(&OutPixels[DestIndex], &SourcePixels[SourceIndex], sizeof(FColor) * OutWidth);
 	}
+	return true;
+}
+
+bool LoadResizeAndCropImageRegion(const FString& SourceImagePath, const int32 RefWidth, const int32 RefHeight, const int32 XMin, const int32 YMin, const int32 XMax, const int32 YMax, const int32 ExpandPixels, TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
+{
+	OutPixels.Reset();
+	OutWidth = 0;
+	OutHeight = 0;
+
+	TArray<FColor> SourcePixels;
+	int32 SourceWidth = 0;
+	int32 SourceHeight = 0;
+	if (!LoadImageFileAsPixels(SourceImagePath, SourcePixels, SourceWidth, SourceHeight))
+	{
+		return false;
+	}
+
+	TArray<FColor> WorkingPixels;
+	int32 WorkingWidth = SourceWidth;
+	int32 WorkingHeight = SourceHeight;
+	if (RefWidth > 0 && RefHeight > 0 && (SourceWidth != RefWidth || SourceHeight != RefHeight))
+	{
+		WorkingWidth = RefWidth;
+		WorkingHeight = RefHeight;
+		WorkingPixels.SetNumUninitialized(WorkingWidth * WorkingHeight);
+		FImageUtils::ImageResize(SourceWidth, SourceHeight, SourcePixels, WorkingWidth, WorkingHeight, WorkingPixels, false);
+		for (FColor& Pixel : WorkingPixels)
+		{
+			Pixel.A = 255;
+		}
+	}
+	else
+	{
+		WorkingPixels = MoveTemp(SourcePixels);
+	}
+
+	const int32 Padding = FMath::Max(0, ExpandPixels);
+	if (!CropBitmapRegion(WorkingPixels, WorkingWidth, WorkingHeight, XMin - Padding, YMin - Padding, XMax + Padding, YMax + Padding, OutPixels, OutWidth, OutHeight))
+	{
+		UE_LOG(LogSceneCaptureLibrary, Warning, TEXT("Failed to crop image region from %s."), *SourceImagePath);
+		return false;
+	}
+
 	return true;
 }
 
@@ -1270,6 +1334,141 @@ void UpdateIdMapEntryPixelBounds(const TArray<FColor>& Pixels, const int32 Width
 	}
 }
 
+FMatrix BuildCaptureViewProjectionMatrix(const FSceneCaptureCameraInfo& Camera)
+{
+	FTransform Transform(Camera.Rotation, Camera.Location);
+	Transform.SetTranslation(FVector::ZeroVector);
+	Transform.SetScale3D(FVector::OneVector);
+
+	FMatrix ViewRotationMatrix = Transform.ToInverseMatrixWithScale();
+	// Match SceneCaptureComponent2D's renderer-side axis conversion.
+	ViewRotationMatrix = ViewRotationMatrix * FMatrix(
+		FPlane(0, 0, 1, 0),
+		FPlane(1, 0, 0, 0),
+		FPlane(0, 1, 0, 0),
+		FPlane(0, 0, 0, 1));
+
+	const float HalfFovRadians = FMath::DegreesToRadians(Camera.FovHorizontal) * 0.5f;
+	const float XAxisMultiplier = 1.0f;
+	const float YAxisMultiplier = Camera.Height > 0 ? static_cast<float>(Camera.Width) / static_cast<float>(Camera.Height) : 1.0f;
+	const FMatrix ProjectionMatrix = FReversedZPerspectiveMatrix(
+		HalfFovRadians,
+		HalfFovRadians,
+		XAxisMultiplier,
+		YAxisMultiplier,
+		GNearClippingPlane,
+		GNearClippingPlane);
+
+	return FTranslationMatrix(-Camera.Location) * ViewRotationMatrix * ProjectionMatrix;
+}
+
+void ResetIdMapEntryFullBounds(TArray<FIdMapEntry>& IdMapEntries)
+{
+	for (FIdMapEntry& Entry : IdMapEntries)
+	{
+		Entry.bHasFullBounds = false;
+		Entry.FullMinX = 0;
+		Entry.FullMinY = 0;
+		Entry.FullMaxX = 0;
+		Entry.FullMaxY = 0;
+	}
+}
+
+TArray<FVector> MakeBoxCorners(const FBox& Box)
+{
+	return {
+		FVector(Box.Min.X, Box.Min.Y, Box.Min.Z),
+		FVector(Box.Min.X, Box.Min.Y, Box.Max.Z),
+		FVector(Box.Min.X, Box.Max.Y, Box.Min.Z),
+		FVector(Box.Min.X, Box.Max.Y, Box.Max.Z),
+		FVector(Box.Max.X, Box.Min.Y, Box.Min.Z),
+		FVector(Box.Max.X, Box.Min.Y, Box.Max.Z),
+		FVector(Box.Max.X, Box.Max.Y, Box.Min.Z),
+		FVector(Box.Max.X, Box.Max.Y, Box.Max.Z),
+	};
+}
+
+void UpdateIdMapEntryFullBounds(const TArray<AActor*>& TargetActors, const FSceneCaptureCameraInfo& Camera, TArray<FIdMapEntry>& IdMapEntries)
+{
+	ResetIdMapEntryFullBounds(IdMapEntries);
+	if (Camera.Width <= 0 || Camera.Height <= 0 || TargetActors.IsEmpty() || IdMapEntries.IsEmpty())
+	{
+		return;
+	}
+
+	TMap<FString, AActor*> ActorByPath;
+	ActorByPath.Reserve(TargetActors.Num());
+	for (AActor* Actor : TargetActors)
+	{
+		if (Actor)
+		{
+			ActorByPath.Add(Actor->GetPathName(), Actor);
+		}
+	}
+
+	const FIntRect ViewRect(0, 0, Camera.Width, Camera.Height);
+	const FMatrix ViewProjectionMatrix = BuildCaptureViewProjectionMatrix(Camera);
+
+	for (FIdMapEntry& Entry : IdMapEntries)
+	{
+		AActor* const* ActorPtr = ActorByPath.Find(Entry.ActorPath);
+		AActor* Actor = ActorPtr ? *ActorPtr : nullptr;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		const FBox LocalBounds = Actor->CalculateComponentsBoundingBoxInLocalSpace(false, false);
+		if (!LocalBounds.IsValid)
+		{
+			continue;
+		}
+
+		bool bHasProjectedCorner = false;
+		float MinX = TNumericLimits<float>::Max();
+		float MinY = TNumericLimits<float>::Max();
+		float MaxX = TNumericLimits<float>::Lowest();
+		float MaxY = TNumericLimits<float>::Lowest();
+		const FTransform ActorTransform = Actor->GetActorTransform();
+		for (const FVector& LocalCorner : MakeBoxCorners(LocalBounds))
+		{
+			const FVector WorldCorner = ActorTransform.TransformPosition(LocalCorner);
+			FVector2D ScreenPosition;
+			FSceneView::ProjectWorldToScreen(WorldCorner, ViewRect, ViewProjectionMatrix, ScreenPosition, true);
+			if (!FMath::IsFinite(ScreenPosition.X) || !FMath::IsFinite(ScreenPosition.Y))
+			{
+				continue;
+			}
+
+			bHasProjectedCorner = true;
+			MinX = FMath::Min(MinX, static_cast<float>(ScreenPosition.X));
+			MinY = FMath::Min(MinY, static_cast<float>(ScreenPosition.Y));
+			MaxX = FMath::Max(MaxX, static_cast<float>(ScreenPosition.X));
+			MaxY = FMath::Max(MaxY, static_cast<float>(ScreenPosition.Y));
+		}
+
+		if (!bHasProjectedCorner)
+		{
+			continue;
+		}
+
+		const int32 ClampedMinX = FMath::Clamp(FMath::FloorToInt(MinX), 0, Camera.Width - 1);
+		const int32 ClampedMinY = FMath::Clamp(FMath::FloorToInt(MinY), 0, Camera.Height - 1);
+		const int32 ClampedMaxX = FMath::Clamp(FMath::CeilToInt(MaxX), 0, Camera.Width - 1);
+		const int32 ClampedMaxY = FMath::Clamp(FMath::CeilToInt(MaxY), 0, Camera.Height - 1);
+		if (ClampedMinX > ClampedMaxX || ClampedMinY > ClampedMaxY)
+		{
+			continue;
+		}
+
+		Entry.bHasFullBounds = true;
+		Entry.FullMinX = ClampedMinX;
+		Entry.FullMinY = ClampedMinY;
+		Entry.FullMaxX = ClampedMaxX;
+		Entry.FullMaxY = ClampedMaxY;
+	}
+}
+
 bool CaptureIdMapPng(const FSceneCaptureCameraInfo& Camera, const TArray<AActor*>& TargetActors, TArray<FIdMapEntry>& IdMapEntries, const FString& PngPath, const bool bOnlyVisibleTargets)
 {
 	UWorld* World = GetEditorWorld();
@@ -1313,15 +1512,18 @@ bool CaptureIdMapPng(const FSceneCaptureCameraInfo& Camera, const TArray<AActor*
 		return false;
 	}
 
+	TArray<AActor*> ActorsForFullBounds = TargetActors;
 	if (bOnlyVisibleTargets)
 	{
 		const TArray<AActor*> VisibleActors = FilterActorsByVisibleIdColors(TargetActors, IdMapEntries, CaptureResult.VisibleColorKeys);
 		IdMapEntries = FilterIdMapEntriesByVisibleColors(IdMapEntries, CaptureResult.VisibleColorKeys);
+		ActorsForFullBounds = VisibleActors;
 		if (VisibleActors.IsEmpty())
 		{
 			TArray<FColor> EmptyPixels;
 			EmptyPixels.Init(FColor::Black, Camera.Width * Camera.Height);
 			UpdateIdMapEntryPixelBounds(EmptyPixels, Camera.Width, Camera.Height, IdMapEntries);
+			UpdateIdMapEntryFullBounds(VisibleActors, Camera, IdMapEntries);
 			return SavePngFile(PngPath, EmptyPixels, Camera.Width, Camera.Height);
 		}
 
@@ -1358,6 +1560,7 @@ bool CaptureIdMapPng(const FSceneCaptureCameraInfo& Camera, const TArray<AActor*
 	}
 
 	UpdateIdMapEntryPixelBounds(CaptureResult.Pixels, Camera.Width, Camera.Height, IdMapEntries);
+	UpdateIdMapEntryFullBounds(ActorsForFullBounds, Camera, IdMapEntries);
 
 	return SavePngFile(PngPath, CaptureResult.Pixels, Camera.Width, Camera.Height);
 }
@@ -1681,42 +1884,14 @@ bool USceneCaptureLibrary::CaptureSceneAndIdMapFast(const FString& OutputDir, co
 	return WriteCombinedJson(CombinedJsonPath, ScenePngPath, IdPngPath, Camera, IdMapEntries);
 }
 
-void USceneCaptureLibrary::CropImageRegionToBase64(const FString& SourceImagePath, const int32 RefWidth, const int32 RefHeight, const int32 XMin, const int32 YMin, const int32 XMax, const int32 YMax, FString& OutDataUri)
+void USceneCaptureLibrary::CropImageRegionToBase64(const FString& SourceImagePath, const int32 RefWidth, const int32 RefHeight, const int32 XMin, const int32 YMin, const int32 XMax, const int32 YMax, const int32 ExpandPixels, FString& OutDataUri)
 {
 	OutDataUri.Reset();
-	TArray<FColor> SourcePixels;
-	int32 SourceWidth = 0;
-	int32 SourceHeight = 0;
-	if (!LoadImageFileAsPixels(SourceImagePath, SourcePixels, SourceWidth, SourceHeight))
-	{
-		return;
-	}
-
-	TArray<FColor> WorkingPixels;
-	int32 WorkingWidth = SourceWidth;
-	int32 WorkingHeight = SourceHeight;
-	if (RefWidth > 0 && RefHeight > 0 && (SourceWidth != RefWidth || SourceHeight != RefHeight))
-	{
-		WorkingWidth = RefWidth;
-		WorkingHeight = RefHeight;
-		WorkingPixels.SetNumUninitialized(WorkingWidth * WorkingHeight);
-		FImageUtils::ImageResize(SourceWidth, SourceHeight, SourcePixels, WorkingWidth, WorkingHeight, WorkingPixels, false);
-		for (FColor& Pixel : WorkingPixels)
-		{
-			Pixel.A = 255;
-		}
-	}
-	else
-	{
-		WorkingPixels = MoveTemp(SourcePixels);
-	}
-
 	TArray<FColor> CroppedPixels;
 	int32 CroppedWidth = 0;
 	int32 CroppedHeight = 0;
-	if (!CropBitmapRegion(WorkingPixels, WorkingWidth, WorkingHeight, XMin, YMin, XMax, YMax, CroppedPixels, CroppedWidth, CroppedHeight))
+	if (!LoadResizeAndCropImageRegion(SourceImagePath, RefWidth, RefHeight, XMin, YMin, XMax, YMax, ExpandPixels, CroppedPixels, CroppedWidth, CroppedHeight))
 	{
-		UE_LOG(LogSceneCaptureLibrary, Warning, TEXT("Failed to crop image region from %s."), *SourceImagePath);
 		return;
 	}
 
@@ -1727,4 +1902,24 @@ void USceneCaptureLibrary::CropImageRegionToBase64(const FString& SourceImagePat
 	}
 
 	OutDataUri = FString(TEXT("data:image/png;base64,")) + FBase64::Encode(PngData.GetData(), static_cast<uint32>(PngData.Num()));
+}
+
+bool USceneCaptureLibrary::CropImageRegionToFile(const FString& SourceImagePath, const int32 RefWidth, const int32 RefHeight, const int32 XMin, const int32 YMin, const int32 XMax, const int32 YMax, const int32 ExpandPixels, const FString& OutPngPath)
+{
+	TArray<FColor> CroppedPixels;
+	int32 CroppedWidth = 0;
+	int32 CroppedHeight = 0;
+	if (!LoadResizeAndCropImageRegion(SourceImagePath, RefWidth, RefHeight, XMin, YMin, XMax, YMax, ExpandPixels, CroppedPixels, CroppedWidth, CroppedHeight))
+	{
+		return false;
+	}
+
+	const FString AbsolutePngPath = FPaths::ConvertRelativePathToFull(OutPngPath);
+	const FString ParentDir = FPaths::GetPath(AbsolutePngPath);
+	if (!ParentDir.IsEmpty())
+	{
+		IFileManager::Get().MakeDirectory(*ParentDir, true);
+	}
+
+	return SavePngFile(AbsolutePngPath, CroppedPixels, CroppedWidth, CroppedHeight);
 }

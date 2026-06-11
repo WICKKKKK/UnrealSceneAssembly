@@ -42,7 +42,7 @@ class Dinov3Provider(object):
     display_name = "DINOv3"
 
     def __init__(self):
-        self.collection_name = config.COLLECTION
+        self.collection_name = config.COLLECTION_DINOv3
 
     def preflight(self):
         _, envelope = common.request_json("GET", "/dinov3/info")

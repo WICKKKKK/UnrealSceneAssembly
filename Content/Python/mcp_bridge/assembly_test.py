@@ -11,6 +11,7 @@ import unreal
 from clip_retrieval import (
     candidates_from_hits,
     clip_search_assets_by_image,
+    dinov3_search_assets_by_image,
     default_clip_output_fields,
 )
 
@@ -23,6 +24,7 @@ from .scene_handlers import (
     _find_actor_by_path,
     _spawn_asset_no_transaction,
     _success,
+    _handle_focus_camera_on_actor,
 )
 from .solver_handlers import (
     _candidate_structs as _solver_candidate_structs,
@@ -55,6 +57,20 @@ def select_all_whiteboxes() -> dict[str, Any]:
 def deselect_all() -> dict[str, Any]:
     _editor_actor_subsystem().select_nothing()
     return _success(**_selection_summary([]))
+
+
+def select_actor_by_path(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    actor = _find_actor_by_path(_required_actor_path(params))
+    _editor_actor_subsystem().set_selected_level_actors([actor])
+    return _success(actor=_actor_summary(actor, include_bounds=True))
+
+
+def focus_actor_by_path(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    actor = _find_actor_by_path(_required_actor_path(params))
+    _editor_actor_subsystem().set_selected_level_actors([actor])
+    return _handle_focus_camera_on_actor({"actor_path": actor.get_path_name()}, {})
 
 
 def cleanup_assembly_results(params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -128,11 +144,14 @@ def _solve_one(actor: Any, id_entry: dict[str, Any], capture_context: dict[str, 
     }
 
     try:
-        bbox = _pixel_bbox(id_entry)
-        item["pixel_bbox"] = bbox
+        bbox_source = _crop_bbox_source(params)
+        bbox = _bbox_from_entry(id_entry, bbox_source)
+        item["crop_bbox_source"] = bbox_source
+        item["pixel_bbox"] = _bbox_from_entry(id_entry, "pixel_bbox")
+        item["full_bbox"] = _bbox_from_entry(id_entry, "full_bbox")
         if not bbox:
-            item["status"] = "no_pixel_bbox"
-            item["error"] = "Captured ID map contains no visible pixels for this actor."
+            item["status"] = "no_full_bbox" if bbox_source == "full_bbox" else "no_pixel_bbox"
+            item["error"] = f"Capture JSON does not contain a valid {bbox_source} for this actor."
             return item
 
         data_uri = _call_unreal_static(
@@ -145,31 +164,43 @@ def _solve_one(actor: Any, id_entry: dict[str, Any], capture_context: dict[str, 
             int(bbox[1]),
             int(bbox[2]),
             int(bbox[3]),
+            max(0, _int_param(params, "crop_expand_pixels", 20)),
         )
         if not data_uri:
             item["status"] = "crop_error"
             item["error"] = "Failed to crop the concept art image for this actor."
             return item
 
-        candidate_limit = _int_param(params, "candidate_limit", 50)
+        candidate_limit = _int_param(params, "candidate_limit", 20)
         timeout = _float_param(params, "timeout", 15.0)
-        search = clip_search_assets_by_image(
-            image_url=data_uri,
-            limit=candidate_limit,
-            project_names=_optional_string_list(params.get("project_names")),
-            asset_types=_optional_string_list(params.get("asset_types")),
-            filters=params.get("filters") if isinstance(params.get("filters"), dict) else None,
-            output_fields=default_clip_output_fields(include_bounding_box=True),
-            score_threshold=_float_param(params, "score_threshold", 0.0),
-            ef=_int_param(params, "ef", 64),
-            collection=_optional_string(params.get("collection")),
-            timeout=timeout,
-        )
+        retrieval_model = _retrieval_model(params)
+        common_search_kwargs = {
+            "image_url": data_uri,
+            "limit": candidate_limit,
+            "project_names": _optional_string_list(params.get("project_names")),
+            "asset_types": _optional_string_list(params.get("asset_types")),
+            "filters": params.get("filters") if isinstance(params.get("filters"), dict) else None,
+            "output_fields": default_clip_output_fields(include_bounding_box=True),
+            "ef": _int_param(params, "ef", 64),
+            "timeout": timeout,
+        }
+        if retrieval_model == "dinov3":
+            search = dinov3_search_assets_by_image(
+                **common_search_kwargs,
+                collection=_optional_string(params.get("collection_dinov3") or params.get("dinov3_collection")),
+            )
+        else:
+            search = clip_search_assets_by_image(
+                **common_search_kwargs,
+                score_threshold=_float_param(params, "score_threshold", 0.0),
+                collection=_optional_string(params.get("collection") or params.get("collection_clip") or params.get("clip_collection")),
+            )
+        item["retrieval_model"] = retrieval_model
         candidates, skipped = candidates_from_hits(search.get("hits") or [])
         item["search"] = _search_summary(search, candidates, skipped)
         if not candidates:
             item["status"] = "no_candidates"
-            item["error"] = "CLIP search returned no candidates with asset_path and bounding_box."
+            item["error"] = "Image search returned no candidates with asset_path and bounding_box."
             return item
 
         settings = _settings_struct(params.get("settings") or _settings_from_params(params))
@@ -323,13 +354,25 @@ def _capture_image_size(capture_data: dict[str, Any]) -> tuple[int, int]:
 
 
 def _pixel_bbox(entry: dict[str, Any]) -> list[int] | None:
-    bbox = entry.get("pixel_bbox") if isinstance(entry, dict) else None
+    return _bbox_from_entry(entry, "pixel_bbox")
+
+
+def _bbox_from_entry(entry: dict[str, Any], field_name: str) -> list[int] | None:
+    bbox = entry.get(field_name) if isinstance(entry, dict) else None
     if not isinstance(bbox, list) or len(bbox) != 4:
         return None
     values = [int(value) for value in bbox]
     if values[0] > values[2] or values[1] > values[3]:
         return None
     return values
+
+
+def _crop_bbox_source(params: dict[str, Any]) -> str:
+    value = _optional_string(params.get("crop_bbox_source")) or "full_bbox"
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"pixel", "pixels", "visible", "visible_pixels", "pixel_bbox"}:
+        return "pixel_bbox"
+    return "full_bbox"
 
 
 def _scene_capture_library() -> Any:
@@ -429,6 +472,20 @@ def _settings_from_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _result_tag(params: dict[str, Any]) -> str:
     return _optional_string(params.get("result_tag") or params.get("tag")) or DEFAULT_RESULT_TAG
+
+
+def _required_actor_path(params: dict[str, Any]) -> str:
+    actor_path = _optional_string(params.get("actor_path"))
+    if not actor_path:
+        raise SceneCommandError("Parameter 'actor_path' is required.")
+    return actor_path
+
+
+def _retrieval_model(params: dict[str, Any]) -> str:
+    value = str(params.get("retrieval_model") or "DINOv3").strip().lower()
+    if value in {"dinov3", "dino", "dino_v3"}:
+        return "dinov3"
+    return "clip"
 
 
 def _base_random_seed(params: dict[str, Any]) -> int | None:

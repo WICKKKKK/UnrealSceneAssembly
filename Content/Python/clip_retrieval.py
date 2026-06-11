@@ -24,6 +24,8 @@ def clip_config() -> dict[str, Any]:
         "api_prefix": str(getattr(scene_config, "API_PREFIX", "/api/v1") or "").rstrip("/"),
         "api_key": api_key,
         "collection": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
+        "collection_clip": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
+        "collection_dinov3": str(getattr(scene_config, "COLLECTION_DINOv3", "dinov3_assets_test") or "dinov3_assets_test"),
         "project_name": str(getattr(scene_config, "PROJECT_NAME", "") or ""),
         "timeout": float(getattr(scene_config, "HTTP_TIMEOUT_SECONDS", 120.0) or 120.0),
     }
@@ -194,6 +196,64 @@ def clip_search_assets_by_image(
     }
 
 
+def dinov3_search_assets_by_image(
+    image_url: str,
+    limit: int = 10,
+    offset: int = 0,
+    project_names: list[str] | None = None,
+    asset_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+    output_fields: list[str] | None = None,
+    ef: int = 64,
+    collection: str | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    query_image = str(image_url or "").strip()
+    if not query_image:
+        raise ValueError("image_url must not be empty")
+
+    cfg = clip_config()
+    collection_name = (collection or cfg["collection_dinov3"]).strip()
+    if not collection_name:
+        raise ValueError("collection must not be empty")
+
+    request_filters = build_clip_filters(project_names=project_names, asset_types=asset_types, filters=filters)
+    payload: dict[str, Any] = {
+        "image": {"base64": image_data_uri_to_base64(query_image)},
+        "limit": bounded_int(limit, 1, 100),
+        "offset": max(0, int(offset)),
+        "search_params": {
+            "ef": bounded_int(ef, 1, 512),
+        },
+    }
+    if request_filters:
+        payload["filters"] = request_filters
+    if output_fields is not None:
+        payload["output_fields"] = output_fields
+
+    data = clip_request_json(f"/dinov3/collections/{collection_name}/search/global", payload, timeout or cfg["timeout"])
+    hits = data.get("hits") or []
+    return {
+        "ok": True,
+        "status": "success",
+        "collection_name": data.get("collection_name", collection_name),
+        "model": data.get("model"),
+        "query_vector_dim": data.get("query_vector_dim"),
+        "search_time_ms": data.get("search_time_ms"),
+        "count": len(hits),
+        "hits": hits,
+        "filters": request_filters,
+    }
+
+
+def image_data_uri_to_base64(image_url: str) -> str:
+    value = str(image_url or "").strip()
+    if value.lower().startswith("data:image/"):
+        _, sep, encoded = value.partition(",")
+        return encoded.strip() if sep else value
+    return value
+
+
 def solver_settings_payload(
     scale_mode: str | None = None,
     combine_mode: str | None = None,
@@ -313,6 +373,7 @@ _clip_error = clip_error
 _default_clip_output_fields = default_clip_output_fields
 _clip_search_assets = clip_search_assets
 _clip_search_assets_by_image = clip_search_assets_by_image
+_dinov3_search_assets_by_image = dinov3_search_assets_by_image
 _solver_settings_payload = solver_settings_payload
 _hit_field = hit_field
 _candidate_from_hit = candidate_from_hit

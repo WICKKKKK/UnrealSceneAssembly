@@ -5,7 +5,7 @@ API_KEY = "jade_ak_pTKyjjFlDlHt2Z1eQubm6tAttiPL0Rzn"
 
 # 项目与 Milvus 集合名
 PROJECT_NAME = "blockout"
-COLLECTION = "dinov3_assets_test"
+COLLECTION_DINOv3 = "dinov3_assets_test"
 COLLECTION_CLIP = "clip_assets_test"
 
 # 缩略图本地输出目录与对外访问路径

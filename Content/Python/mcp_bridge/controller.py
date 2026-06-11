@@ -294,6 +294,20 @@ def deselect_all_json() -> str:
 
 
 @_safe_json
+def select_actor_by_path_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.select_actor_by_path(_decode_payload(payload_b64)))
+
+
+@_safe_json
+def focus_actor_by_path_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.focus_actor_by_path(_decode_payload(payload_b64)))
+
+
+@_safe_json
 def cleanup_assembly_results_json(payload_b64: str = "") -> str:
     from . import assembly_test
 
@@ -305,6 +319,27 @@ def run_assembly_test_json(payload_b64: str = "") -> str:
     from . import assembly_test
 
     return _json_payload(assembly_test.run_assembly_test(_decode_payload(payload_b64)))
+
+
+@_safe_json
+def start_async_assembly_json(payload_b64: str = "") -> str:
+    from . import assembly_async
+
+    return _json_payload(assembly_async.start_async_assembly(_decode_payload(payload_b64)))
+
+
+@_safe_json
+def poll_assembly_status_json() -> str:
+    from . import assembly_async
+
+    return _json_payload(assembly_async.poll_assembly_status())
+
+
+@_safe_json
+def cancel_assembly_json() -> str:
+    from . import assembly_async
+
+    return _json_payload(assembly_async.cancel_assembly())
 
 
 def _json_payload(payload: dict[str, Any]) -> str:
@@ -322,6 +357,12 @@ def _decode_payload(payload_b64: str) -> dict[str, Any]:
 
 
 def shutdown() -> None:
+    try:
+        from . import assembly_async
+
+        assembly_async.shutdown_async_assembly()
+    except Exception:
+        pass
     controller = get_controller()
     controller.stop()
 

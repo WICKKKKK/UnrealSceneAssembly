@@ -5,17 +5,40 @@
 #include "UObject/Object.h"
 #include "SceneAssemblyTestSettings.generated.h"
 
+UENUM(BlueprintType)
+enum class ESceneAssemblyRetrievalModel : uint8
+{
+	CLIP UMETA(DisplayName = "CLIP"),
+	DINOv3 UMETA(DisplayName = "DINOv3"),
+};
+
+UENUM(BlueprintType)
+enum class ESceneAssemblyCropBboxSource : uint8
+{
+	FullProjected UMETA(DisplayName = "Full Projected BBox"),
+	VisiblePixels UMETA(DisplayName = "Visible Pixel BBox"),
+};
+
 UCLASS()
 class UNREALSCENEASSEMBLY_API USceneAssemblyTestSettings : public UObject
 {
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "候选数量", ToolTip = "每个 Actor 从 CLIP 检索返回的候选资产数量。", ClampMin = "1", ClampMax = "100", UIMin = "1", UIMax = "100"))
+	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "检索模型", ToolTip = "选择用于图搜图的后端模型。CLIP 使用跨模态资产集合；DINOv3 使用视觉全局特征资产集合。"))
+	ESceneAssemblyRetrievalModel RetrievalModel = ESceneAssemblyRetrievalModel::DINOv3;
+
+	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "裁剪框来源", ToolTip = "Full Projected BBox 使用 Actor 局部 BoundingBox 经 Transform 后投影出的完整屏幕框；Visible Pixel BBox 使用 ID Map 中实际可见像素框。两者不会互相回退。"))
+	ESceneAssemblyCropBboxSource CropBboxSource = ESceneAssemblyCropBboxSource::VisiblePixels;
+
+	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "候选数量", ToolTip = "每个 Actor 从图像检索返回的候选资产数量。", ClampMin = "1", ClampMax = "100", UIMin = "1", UIMax = "100"))
 	int32 CandidateLimit = 50;
 
-	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "分数阈值", ToolTip = "CLIP 检索分数下限。0 表示不过滤。", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "分数阈值", ToolTip = "CLIP 检索分数下限。DINOv3 当前接口不使用该参数。0 表示不过滤。", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float ScoreThreshold = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category = "检索", meta = (DisplayName = "图像裁剪框扩展(px)", ToolTip = "按所选 bbox 裁剪原画时向外扩展的像素数；遇到图像边缘会自动停止。", ClampMin = "0", UIMin = "0"))
+	int32 CropExpandPixels = 20;
 
 	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "缩放模式", ToolTip = "FitIoU 使用三轴几何平均缩放；MatchHeight 使资产高度匹配白盒高度。"))
 	ESceneAssemblyScaleMode ScaleMode = ESceneAssemblyScaleMode::FitIoU;
