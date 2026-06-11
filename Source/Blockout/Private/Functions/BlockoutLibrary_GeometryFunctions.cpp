@@ -1,12 +1,19 @@
 ﻿#include "Functions/BlockoutLibrary_GeometryFunctions.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "BlockoutLog.h"
 #include "BlockoutSettings.h"
 #include "Functions/BlockoutLibrary_SplineFunctions.h"
 #include "Components/SplineComponent.h"
 #include "Functions/BlockoutLibrary_BasicFunctions.h"
 #include "Functions/BlockoutLibrary_MathFunctions.h"
+#include "GeometryScript/MeshBasicEditFunctions.h"
+#include "GeometryScript/MeshDecompositionFunctions.h"
+#include "GeometryScript/MeshModelingFunctions.h"
+#include "GeometryScript/MeshNormalsFunctions.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/MeshQueryFunctions.h"
+#include "GeometryScript/MeshRepairFunctions.h"
+#include "GeometryScript/MeshTransformFunctions.h"
 
 
 UDynamicMesh* UBlockoutLibrary_GeometryFunctions::CleanDegenerateTris(
@@ -17,9 +24,9 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::CleanDegenerateTris(
 		return TargetMesh;
 	}
 	
-	FFalconGeometryScriptIndexList TriangleIDList;
+	FGeometryScriptIndexList TriangleIDList;
 	bool bHasTriangleIDGaps;
-	UFalconGeometryLibrary_MeshQuery::GetAllTriangleIDs(
+	UGeometryScriptLibrary_MeshQueryFunctions::GetAllTriangleIDs(
 		TargetMesh,
 		TriangleIDList,
 		bHasTriangleIDGaps
@@ -37,7 +44,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::CleanDegenerateTris(
 		FVector Vertex1;
 		FVector Vertex2;
 		FVector Vertex3;
-		UFalconGeometryLibrary_MeshQuery::GetTrianglePositions(
+		UGeometryScriptLibrary_MeshQueryFunctions::GetTrianglePositions(
 			TargetMesh, ID, bIsValidTriangle, Vertex1, Vertex2, Vertex3
 			);
 		FVector EdgeDir1 = Vertex2 - Vertex1;
@@ -62,16 +69,16 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::CleanDegenerateTris(
 	
 	if (DeleteDegenerates && DegenerateTriList.Num()>0)
 	{
-		FFalconGeometryScriptIndexList TriangleList;
-		TriangleList.Reset(EFalconGeometryScriptIndexType::Triangle);
+		FGeometryScriptIndexList TriangleList;
+		TriangleList.Reset(EGeometryScriptIndexType::Triangle);
 		TriangleList.List->Append(DegenerateTriList);
 		int NumDeleted;
-		UFalconGeometryLibrary_MeshBasicEdit::DeleteTrianglesFromMesh(
+		UGeometryScriptLibrary_MeshBasicEditFunctions::DeleteTrianglesFromMesh(
 			TargetMesh,
 			TriangleList,
 			NumDeleted
 			);
-		UFalconGeometryLibrary_MeshRepair::CompactMesh(TargetMesh);
+		UGeometryScriptLibrary_MeshRepairFunctions::CompactMesh(TargetMesh);
 	}
 
 	return TargetMesh;
@@ -90,7 +97,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GeneratePlanarMesh(
 		SplineIndexes, SplinePoints, OutTangentList, SplineCenter);
 	if (SplinePoints.Num() > 2)
 	{
-		FFalconGeometryScriptPrimitiveOptions PrimitiveOptions;
+		FGeometryScriptPrimitiveOptions PrimitiveOptions;
 		FTransform Transform = FTransform::Identity;
 		TArray<FVector2D> PolygonVertices;
 		for (FVector Pos : SplinePoints)
@@ -98,7 +105,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GeneratePlanarMesh(
 			PolygonVertices.Add(FVector2D(Pos.X, Pos.Y));
 		}
 		
-		UFalconGeometryLibrary_MeshPrimitive::AppendTriangulatedPolygon(
+		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendTriangulatedPolygon(
 			TargetMesh,
 			PrimitiveOptions,
 			Transform,
@@ -148,8 +155,8 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateSplineMesh(
 		{
 			int LeftVertexIndex;
 			int RightVertexIndex;
-			UFalconGeometryLibrary_MeshBasicEdit::AddVertexToMesh(TargetMesh, LeftOffsetPoints[i], LeftVertexIndex);
-			UFalconGeometryLibrary_MeshBasicEdit::AddVertexToMesh(TargetMesh, RightOffsetPoints[i], RightVertexIndex);
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AddVertexToMesh(TargetMesh, LeftOffsetPoints[i], LeftVertexIndex);
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AddVertexToMesh(TargetMesh, RightOffsetPoints[i], RightVertexIndex);
 
 			FIntVector NewTriangle;
 			int NewTriangleIndex;
@@ -163,7 +170,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateSplineMesh(
 				{
 					NewTriangle = FIntVector((i-1)*2, LeftVertexIndex, (i-1)*2+1);
 				}
-				UFalconGeometryLibrary_MeshBasicEdit::AddTriangleToMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AddTriangleToMesh(
 					TargetMesh,
 					NewTriangle,
 					NewTriangleIndex);
@@ -176,7 +183,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateSplineMesh(
 					NewTriangle = FIntVector((i-1)*2+1, LeftVertexIndex, RightVertexIndex);
 				}
 				
-				UFalconGeometryLibrary_MeshBasicEdit::AddTriangleToMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AddTriangleToMesh(
 					TargetMesh,
 					NewTriangle,
 					NewTriangleIndex);
@@ -192,7 +199,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateSplineMesh(
 					NewTriangle = FIntVector(LeftVertexIndex, 0, RightVertexIndex);
 				}
 				
-				UFalconGeometryLibrary_MeshBasicEdit::AddTriangleToMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AddTriangleToMesh(
 					TargetMesh,
 					NewTriangle,
 					NewTriangleIndex);
@@ -205,7 +212,7 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateSplineMesh(
 					NewTriangle = FIntVector(RightVertexIndex, 0, 1);
 				}
 				
-				UFalconGeometryLibrary_MeshBasicEdit::AddTriangleToMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AddTriangleToMesh(
 					TargetMesh,
 					NewTriangle,
 					NewTriangleIndex);
@@ -245,19 +252,19 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateRoofMesh(
 	FBox PlanMeshBBox;
 	if (RotateRidgeAngle == 0.0f)
 	{
-		PlanMeshBBox = UFalconGeometryLibrary_MeshQuery::GetMeshBoundingBox(TargetMesh);
+		PlanMeshBBox = UGeometryScriptLibrary_MeshQueryFunctions::GetMeshBoundingBox(TargetMesh);
 	}else
 	{
-		UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(
+		UGeometryScriptLibrary_MeshDecompositionFunctions::CopyMeshToMesh(
 			TargetMesh,
 			RotatePlanMesh,
 			RotatePlanMesh);
 		
-		UFalconGeometryLibrary_MeshTransform::TransformMesh(
+		UGeometryScriptLibrary_MeshTransformFunctions::TransformMesh(
 			RotatePlanMesh,
 			FTransform(FQuat(FRotator(0.0f, RotateRidgeAngle, 0.0f))));
 
-		PlanMeshBBox = UFalconGeometryLibrary_MeshQuery::GetMeshBoundingBox(RotatePlanMesh);
+		PlanMeshBBox = UGeometryScriptLibrary_MeshQueryFunctions::GetMeshBoundingBox(RotatePlanMesh);
 	}
 	RoofMinCorner = PlanMeshBBox.Min;
 	RidgeDir.Y = PlanMeshBBox.Max.Y - PlanMeshBBox.Min.Y;
@@ -269,9 +276,9 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateRoofMesh(
 	float MountainWallWidth = FMath::Max(RoofWidthDir.X, RoofWidthDir.Y);
 	MountainWallVertices.Add(FVector2D(MountainWallWidth*0.5f, RoofHeight));
 	MountainWallVertices.Add(FVector2D(MountainWallWidth, 0.0f));
-	UFalconGeometryLibrary_MeshPrimitive::AppendTriangulatedPolygon(
+	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendTriangulatedPolygon(
 		RoofMesh,
-		FFalconGeometryScriptPrimitiveOptions(),
+		FGeometryScriptPrimitiveOptions(),
 		FTransform(FQuat(FRotator(0.0f, 0.0f, -90.0f))),
 		MountainWallVertices
 		);
@@ -280,52 +287,29 @@ UDynamicMesh* UBlockoutLibrary_GeometryFunctions::GenerateRoofMesh(
 	RoofTransform.SetLocation(RoofMinCorner);
 	RoofTransform.SetRotation(FQuat(UBlockoutLibrary_MathFunctions::GetRotFromTwoDir(
 		FVector(1.0f, 0.0f, 0.0f),  RoofWidthDir)));
-	UFalconGeometryLibrary_MeshTransform::TransformMesh(RoofMesh, RoofTransform);
+	UGeometryScriptLibrary_MeshTransformFunctions::TransformMesh(RoofMesh, RoofTransform);
 
 	bool bIsValidTriangle;
-	FVector MountainWallFaceNormal = UFalconGeometryLibrary_MeshQuery::GetTriangleFaceNormal(RoofMesh, 0, bIsValidTriangle);
+	FVector MountainWallFaceNormal = UGeometryScriptLibrary_MeshQueryFunctions::GetTriangleFaceNormal(RoofMesh, 0, bIsValidTriangle);
 	if (FVector::DotProduct(MountainWallFaceNormal, RidgeDir) < 0.0f)
 	{
-		UFalconGeometryLibrary_MeshNormal::FlipNormals(RoofMesh);
+		UGeometryScriptLibrary_MeshNormalsFunctions::FlipNormals(RoofMesh);
 	}
 
 	// 挤出 Roof Mesh
-	FFalconGeometryScriptMeshExtrudeOptions RoofExtrudeOptions;
+	FGeometryScriptMeshExtrudeOptions RoofExtrudeOptions;
 	RoofExtrudeOptions.ExtrudeDirection = RidgeDir;
-	UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(RoofMesh, RoofExtrudeOptions);
+	UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(RoofMesh, RoofExtrudeOptions);
 
 	if (!RotateRidgeAngle==0.0f)
 	{
-		UFalconGeometryLibrary_MeshTransform::TransformMesh(
+		UGeometryScriptLibrary_MeshTransformFunctions::TransformMesh(
 			RoofMesh,
 			FTransform(FQuat(FRotator(0.0f, RotateRidgeAngle*-1.0f, 0.0f))));
 
 		RidgeDir = FRotator(0.0f, RotateRidgeAngle, 0.0f).RotateVector(RidgeDir);
 	}
 
-	// // 切掉多余的 Mesh
-	// UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(TargetMesh, CutMesh, CutMesh);
-	// UFalconGeometryLibrary_MeshTransform::TranslateMesh(CutMesh, FVector(0.0f, 0.0f, -1.0f));
-	// FFalconGeometryScriptMeshExtrudeOptions CutExtrudeOptions;
-	// CutExtrudeOptions.ExtrudeDistance = RoofHeight + 2.0f;
-	// UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(CutMesh, CutExtrudeOptions);
-	// FFalconGeometryScriptEdgeData Edges;
-	// UFalconGeometryLibrary_MeshBoolean::ApplyMeshBoolean(
-	// 	RoofMesh,
-	// 	FTransform::Identity,
-	// 	CutMesh,
-	// 	FTransform::Identity,
-	// 	EFalconGeometryScriptBooleanOperation::Intersection,
-	// 	FFalconGeometryScriptMeshBooleanOptions(),
-	// 	Edges
-	// 	);
-
-	// UFalconGeometryLibrary_MeshBasicEditFunctions::AppendMesh(
-	// 	TargetMesh,
-	// 	RoofMesh,
-	// 	FTransform::Identity
-	// 	);
-	
 	TargetMesh->SetMesh(RoofMesh->GetMeshRef());
 	if (MeshPool)
 	{

@@ -1,6 +1,5 @@
 ﻿#include "Building/BlockoutArbiSlopingRoof.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "Functions/BlockoutLibrary_SplineFunctions.h"
 #include "Functions/BlockoutLibrary_GeometryFunctions.h"
 

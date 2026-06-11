@@ -1,6 +1,5 @@
 #include "BlockoutBaseDynamicMeshActor.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "BlockoutLog.h"
 #include "BlockoutSettings.h"
 #include "Components/BillboardComponent.h"
@@ -11,6 +10,16 @@
 #include "Functions/BlockoutLibrary_BasicFunctions.h"
 #include "Functions/BlockoutLibrary_EditorFunctions.h"
 #include "Functions/BlockoutLibrary_FaceFunctions.h"
+#include "GeometryScript/CollisionFunctions.h"
+#include "GeometryScript/CreateNewAssetUtilityFunctions.h"
+#include "GeometryScript/MeshAssetFunctions.h"
+#include "GeometryScript/MeshBasicEditFunctions.h"
+#include "GeometryScript/MeshBooleanFunctions.h"
+#include "GeometryScript/MeshDecompositionFunctions.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/MeshQueryFunctions.h"
+#include "GeometryScript/MeshTransformFunctions.h"
+#include "GeometryScript/SceneUtilityFunctions.h"
 #include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -67,6 +76,7 @@ ABlockoutBaseDynamicMeshActor::ABlockoutBaseDynamicMeshActor()
 	Tags.AddUnique(TEXT("BlockoutActor"));
 	PreviousLocation = GetActorLocation();
 	PreviousRotation = GetActorRotation();
+	InitializeTextPlacementLookupTable();
 
 	if (!IsRunningCommandlet())
 	{
@@ -88,9 +98,9 @@ FBox ABlockoutBaseDynamicMeshActor::CalMeshAABB(UDynamicMesh* InMesh, FTransform
 
 	UDynamicMesh* TransformedMesh = AllocateComputeMesh();
 	UDynamicMesh* TransformedMeshOut = TransformedMesh;
-	UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(InMesh, TransformedMesh, TransformedMeshOut);
-	UFalconGeometryLibrary_MeshTransform::TransformMesh(TransformedMesh, Transform);
-	const FBox AABB = UFalconGeometryLibrary_MeshQuery::GetMeshBoundingBox(TransformedMesh);
+	UGeometryScriptLibrary_MeshDecompositionFunctions::CopyMeshToMesh(InMesh, TransformedMesh, TransformedMeshOut);
+	UGeometryScriptLibrary_MeshTransformFunctions::TransformMesh(TransformedMesh, Transform);
+	const FBox AABB = UGeometryScriptLibrary_MeshQueryFunctions::GetMeshBoundingBox(TransformedMesh);
 	ReleaseComputeMesh(TransformedMesh);
 	return AABB;
 }
@@ -236,9 +246,9 @@ void ABlockoutBaseDynamicMeshActor::OverlappingBoolean()
 			BoxTranslation.Y += (FoundActorBBox.Min.Y + FoundActorBBox.Max.Y) * 0.5f;
 			BoxTranslation.Z += FoundActorBBox.Min.Z;
 
-			UFalconGeometryLibrary_MeshPrimitive::AppendBox(
+			UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 				MeshToSubtract,
-				FFalconGeometryScriptPrimitiveOptions(),
+				FGeometryScriptPrimitiveOptions(),
 				FTransform(FoundActorTransform.GetRotation(), BoxTranslation, FoundActorTransform.GetScale3D()),
 				FoundActorBBox.Max.X - FoundActorBBox.Min.X,
 				FoundActorBBox.Max.Y - FoundActorBBox.Min.Y,
@@ -247,19 +257,18 @@ void ABlockoutBaseDynamicMeshActor::OverlappingBoolean()
 		else
 		{
 			FTransform LocalToWorld;
-			EFalconGeometryScriptOutcomePins Outcome;
-			UFalconGeometryLibrary_SceneUtility::CopyMeshFromComponent(FoundActor->SubtractiveMeshComp, MeshToSubtract, FFalconGeometryScriptCopyMeshFromComponentOptions(), true, LocalToWorld, Outcome);
-			if (Outcome != EFalconGeometryScriptOutcomePins::Success)
+			EGeometryScriptOutcomePins Outcome;
+			UGeometryScriptLibrary_SceneUtilityFunctions::CopyMeshFromComponent(FoundActor->SubtractiveMeshComp, MeshToSubtract, FGeometryScriptCopyMeshFromComponentOptions(), true, LocalToWorld, Outcome);
+			if (Outcome != EGeometryScriptOutcomePins::Success)
 			{
 				ReleaseComputeMesh(MeshToSubtract);
 				continue;
 			}
 		}
 
-		FFalconGeometryScriptEdgeData Edges;
-		UFalconGeometryLibrary_MeshBoolean::ApplyMeshBoolean(
+		UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshBoolean(
 			DynamicMeshComponent->GetDynamicMesh(), GetActorTransform(), MeshToSubtract, FTransform::Identity,
-			EFalconGeometryScriptBooleanOperation::Subtract, FFalconGeometryScriptMeshBooleanOptions(), Edges);
+			EGeometryScriptBooleanOperation::Subtract, FGeometryScriptMeshBooleanOptions());
 		ReleaseComputeMesh(MeshToSubtract);
 	}
 }
@@ -349,6 +358,156 @@ FString ABlockoutBaseDynamicMeshActor::CreateSingleUPropertyTextLabel(FProperty*
 
 void ABlockoutBaseDynamicMeshActor::InitializeTextPlacementLookupTable()
 {
+	TextPlacementLookupTable.Empty();
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::YZPositive,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 180, 0), FVector(-0.501f, 0.0f, 0.0f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 180, 0), FVector(-0.501f, 0.0f, 0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 180, 0), FVector(-0.501f, 0.0f, -0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 180, 0), FVector(-0.501f, -0.5f, 0.0f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 180, 0), FVector(-0.501f, -0.5f, 0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 180, 0), FVector(-0.501f, -0.5f, -0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 180, 0), FVector(-0.501f, 0.5f, 0.0f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 180, 0), FVector(-0.501f, 0.5f, 0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 180, 0), FVector(-0.501f, 0.5f, -0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
+
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::YZNegative,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 0, 0), FVector(0.501f, 0.0f, 0.0f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 0, 0), FVector(0.501f, 0.0f, 0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 0, 0), FVector(0.501f, 0.0f, -0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 0, 0), FVector(0.501f, 0.5f, 0.0f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 0, 0), FVector(0.501f, 0.5f, 0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 0, 0), FVector(0.501f, 0.5f, -0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 0, 0), FVector(0.501f, -0.5f, 0.0f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 0, 0), FVector(0.501f, -0.5f, 0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 0, 0), FVector(0.501f, -0.5f, -0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
+
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::XZPositive,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, -90, 0), FVector(0.0f, -0.501f, 0.0f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, -90, 0), FVector(0.0f, -0.501f, 0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, -90, 0), FVector(0.0f, -0.501f, -0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, -90, 0), FVector(0.5f, -0.501f, 0.0f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, -90, 0), FVector(0.5f, -0.501f, 0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, -90, 0), FVector(0.5f, -0.501f, -0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, -90, 0), FVector(-0.5f, -0.501f, 0.0f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, -90, 0), FVector(-0.5f, -0.501f, 0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, -90, 0), FVector(-0.5f, -0.501f, -0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
+
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::XZNegative,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 90, 0), FVector(0.0f, 0.501f, 0.0f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 90, 0), FVector(0.0f, 0.501f, 0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 90, 0), FVector(0.0f, 0.501f, -0.5f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 90, 0), FVector(-0.5f, 0.501f, 0.0f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 90, 0), FVector(-0.5f, 0.501f, 0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 90, 0), FVector(-0.5f, 0.501f, -0.5f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(0, 90, 0), FVector(0.5f, 0.501f, 0.0f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(0, 90, 0), FVector(0.5f, 0.501f, 0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(0, 90, 0), FVector(0.5f, 0.501f, -0.5f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
+
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::XYPositive,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(-90, 0, 180), FVector(0.0f, 0.0f, -0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(-90, 0, 180), FVector(-0.5f, 0.0f, -0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(-90, 0, 180), FVector(0.5f, 0.0f, -0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(-90, 0, 180), FVector(0.0f, -0.5f, -0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(-90, 0, 180), FVector(-0.5f, -0.5f, -0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(-90, 0, 180), FVector(0.5f, -0.5f, -0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(-90, 0, 180), FVector(0.0f, 0.5f, -0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(-90, 0, 180), FVector(-0.5f, 0.5f, -0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(-90, 0, 180), FVector(0.5f, 0.5f, -0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
+
+	TextPlacementLookupTable.Add(EBlockoutTextPlaceMode::XYNegative,
+	{
+		{EBlockoutHorizontalAlignment::Center,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(90, 0, 180), FVector(0.0f, 0.0f, 0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(90, 0, 180), FVector(0.5f, 0.0f, 0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(90, 0, 180), FVector(-0.5f, 0.0f, 0.501f), EHorizTextAligment::EHTA_Center, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Left,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(90, 0, 180), FVector(0.0f, -0.5f, 0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(90, 0, 180), FVector(0.5f, -0.5f, 0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(90, 0, 180), FVector(-0.5f, -0.5f, 0.501f), EHorizTextAligment::EHTA_Left, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+		{EBlockoutHorizontalAlignment::Right,
+			{
+				{EBlockoutVerticalAlignment::Center, {FRotator(90, 0, 180), FVector(0.0f, 0.5f, 0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextCenter}},
+				{EBlockoutVerticalAlignment::Top, {FRotator(90, 0, 180), FVector(0.5f, 0.5f, 0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextTop}},
+				{EBlockoutVerticalAlignment::Bottom, {FRotator(90, 0, 180), FVector(-0.5f, 0.5f, 0.501f), EHorizTextAligment::EHTA_Right, EVerticalTextAligment::EVRTA_TextBottom}},
+			}
+		},
+	});
 }
 
 void ABlockoutBaseDynamicMeshActor::PlaceTextLabelOnCubicFace(UTextRenderComponent* TextComp)
@@ -358,24 +517,24 @@ void ABlockoutBaseDynamicMeshActor::PlaceTextLabelOnCubicFace(UTextRenderCompone
 		return;
 	}
 
-	const FVector Size = MeshLocalAABB.GetSize();
-	const FVector Center = MeshLocalAABB.GetCenter();
-	FVector Offset = FVector::ZeroVector;
-	FRotator Rotation = FRotator::ZeroRotator;
-
-	switch (TextPlaceMode)
+	if (const auto* HorizontalAlignments = TextPlacementLookupTable.Find(TextPlaceMode))
 	{
-	case EBlockoutTextPlaceMode::YZPositive: Offset.X = -0.501f * Size.X; Rotation = FRotator(0, 180, 0); break;
-	case EBlockoutTextPlaceMode::YZNegative: Offset.X = 0.501f * Size.X; Rotation = FRotator(0, 0, 0); break;
-	case EBlockoutTextPlaceMode::XZPositive: Offset.Y = -0.501f * Size.Y; Rotation = FRotator(0, -90, 0); break;
-	case EBlockoutTextPlaceMode::XZNegative: Offset.Y = 0.501f * Size.Y; Rotation = FRotator(0, 90, 0); break;
-	case EBlockoutTextPlaceMode::XYPositive: Offset.Z = -0.501f * Size.Z; Rotation = FRotator(-90, 0, 180); break;
-	case EBlockoutTextPlaceMode::XYNegative: Offset.Z = 0.501f * Size.Z; Rotation = FRotator(90, 0, 180); break;
+		if (const auto* VerticalAlignments = HorizontalAlignments->Find(TextHorizontalAlignment))
+		{
+			if (const FTextPlacementParams* Params = VerticalAlignments->Find(TextVerticalAlignment))
+			{
+				const FVector Size = MeshLocalAABB.GetSize();
+				const FVector Center = MeshLocalAABB.GetCenter();
+				const FVector LocalOffset(Params->Offset.X * Size.X, Params->Offset.Y * Size.Y, Params->Offset.Z * Size.Z);
+				TextComp->SetRelativeTransform(TextTransform.ToFTransform() * FTransform(Params->Rotation, Center + LocalOffset, FVector::OneVector));
+				TextComp->SetHorizontalAlignment(Params->HorizontalAlignment);
+				TextComp->SetVerticalAlignment(Params->VerticalAlignment);
+				return;
+			}
+		}
 	}
 
-	TextComp->SetRelativeTransform(TextTransform.ToFTransform() * FTransform(Rotation, Center + Offset, FVector::OneVector));
-	TextComp->SetHorizontalAlignment(TextHorizontalAlignment == EBlockoutHorizontalAlignment::Left ? EHorizTextAligment::EHTA_Left : (TextHorizontalAlignment == EBlockoutHorizontalAlignment::Right ? EHorizTextAligment::EHTA_Right : EHorizTextAligment::EHTA_Center));
-	TextComp->SetVerticalAlignment(TextVerticalAlignment == EBlockoutVerticalAlignment::Top ? EVerticalTextAligment::EVRTA_TextTop : (TextVerticalAlignment == EBlockoutVerticalAlignment::Bottom ? EVerticalTextAligment::EVRTA_TextBottom : EVerticalTextAligment::EVRTA_TextCenter));
+	BlockoutLog(TEXT("Text placement parameters not found for the given configuration."));
 }
 
 UTextRenderComponent* ABlockoutBaseDynamicMeshActor::CreateTextComp(FText InText, const FTransform& InTransform)
@@ -431,6 +590,8 @@ void ABlockoutBaseDynamicMeshActor::GetBBox_Imp(FBox& OutLocalBox, FTransform& O
 
 void ABlockoutBaseDynamicMeshActor::RebuildBlockoutMesh()
 {
+	AllTextLabelString.Empty();
+
 	if (UBlockoutLibrary_BasicFunctions::IsDynamicMeshValid(DynamicMeshComponent->GetDynamicMesh()))
 	{
 		DynamicMeshComponent->GetDynamicMesh()->Reset();
@@ -443,10 +604,10 @@ void ABlockoutBaseDynamicMeshActor::RebuildBlockoutMesh()
 	CreateBlockoutMesh();
 
 	GeneratedMeshComp->GetDynamicMesh()->Reset();
-	UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(GeneratedMeshComp->GetDynamicMesh(), DynamicMeshComponent->GetDynamicMesh(), FTransform::Identity, FFalconGeometryScriptAppendMeshOptions());
+	UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(GeneratedMeshComp->GetDynamicMesh(), DynamicMeshComponent->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 	if (bSubtractive)
 	{
-		UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(SubtractiveMeshComp->GetDynamicMesh(), DynamicMeshComponent->GetDynamicMesh(), FTransform::Identity, FFalconGeometryScriptAppendMeshOptions());
+		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(SubtractiveMeshComp->GetDynamicMesh(), DynamicMeshComponent->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 	}
 
 	if (bShowTextLabel && MainTextComp)
@@ -465,7 +626,7 @@ void ABlockoutBaseDynamicMeshActor::RebuildInteractiveAffect()
 	if (bCanBeSubtracted && !bSubtractive)
 	{
 		DynamicMeshComponent->GetDynamicMesh()->Reset();
-		UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(DynamicMeshComponent->GetDynamicMesh(), GeneratedMeshComp->GetDynamicMesh(), FTransform::Identity, FFalconGeometryScriptAppendMeshOptions());
+		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(DynamicMeshComponent->GetDynamicMesh(), GeneratedMeshComp->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 		OverlappingBoolean();
 	}
 }
@@ -602,27 +763,47 @@ bool ABlockoutBaseDynamicMeshActor::ExportActorToLevel(ULevel* TargetLevel, FStr
 		return false;
 	}
 
-	FString UniqueAssetPathAndName;
 	FString UniqueAssetName;
-	EFalconGeometryScriptOutcomePins UniqueAssetNameOutcome;
-	UFalconGeometryLibrary_CreateNewAssetUtility::CreateUniqueNewAssetPathName(AssetExportPath, TEXT("BlockoutMesh_"), UniqueAssetPathAndName, UniqueAssetName, FFalconGeometryScriptUniqueAssetNameOptions(), UniqueAssetNameOutcome);
-	if (UniqueAssetNameOutcome == EFalconGeometryScriptOutcomePins::Failure)
+	if (IsValid(ExportStaticMesh) && ExportStaticMesh->GetPathName() == AssetExportPath)
 	{
-		return false;
-	}
+		EGeometryScriptOutcomePins Outcome;
+		UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+			DynamicMeshComponent->GetDynamicMesh(),
+			ExportStaticMesh,
+			FGeometryScriptCopyMeshToAssetOptions(),
+			FGeometryScriptMeshWriteLOD(),
+			Outcome);
+		if (Outcome == EGeometryScriptOutcomePins::Failure)
+		{
+			BlockoutLog(TEXT("CopyMeshToStaticMesh Failed"));
+			return false;
+		}
 
-	EFalconGeometryScriptOutcomePins CreateOutcome;
-	FFalconGeometryScriptCreateNewStaticMeshAssetOptions CreateOptions;
-	CreateOptions.CollisionMode = DynamicMeshComponent->CollisionType;
-	ExportStaticMesh = UFalconGeometryLibrary_CreateNewAssetUtility::CreateNewStaticMeshAssetFromMesh(DynamicMeshComponent->GetDynamicMesh(), nullptr, UniqueAssetPathAndName, CreateOptions, CreateOutcome);
-	if (CreateOutcome == EFalconGeometryScriptOutcomePins::Failure || !IsValid(ExportStaticMesh))
+		UniqueAssetName = ExportStaticMesh->GetName();
+	}
+	else
 	{
-		return false;
+		FString UniqueAssetPathAndName;
+		EGeometryScriptOutcomePins UniqueAssetNameOutcome;
+		UGeometryScriptLibrary_CreateNewAssetFunctions::CreateUniqueNewAssetPathName(AssetExportPath, TEXT("BlockoutMesh_"), UniqueAssetPathAndName, UniqueAssetName, FGeometryScriptUniqueAssetNameOptions(), UniqueAssetNameOutcome);
+		if (UniqueAssetNameOutcome == EGeometryScriptOutcomePins::Failure)
+		{
+			return false;
+		}
+
+		EGeometryScriptOutcomePins CreateOutcome;
+		FGeometryScriptCreateNewStaticMeshAssetOptions CreateOptions;
+		CreateOptions.CollisionMode = DynamicMeshComponent->CollisionType;
+		ExportStaticMesh = UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMeshAssetFromMesh(DynamicMeshComponent->GetDynamicMesh(), UniqueAssetPathAndName, CreateOptions, CreateOutcome);
+		if (CreateOutcome == EGeometryScriptOutcomePins::Failure || !IsValid(ExportStaticMesh))
+		{
+			return false;
+		}
 	}
 
 	OutAssets.Add(ExportStaticMesh);
-	UFalconGeometryLibrary_MeshCollision::SetStaticMeshCollisionFromComponent(ExportStaticMesh, DynamicMeshComponent, FFalconGeometryScriptSetSimpleCollisionOptions());
-	if (UBodySetup* BodySetup = FalconGetMeshBodySetup(ExportStaticMesh))
+	UGeometryScriptLibrary_CollisionFunctions::SetStaticMeshCollisionFromComponent(ExportStaticMesh, DynamicMeshComponent, FGeometryScriptSetSimpleCollisionOptions());
+	if (UBodySetup* BodySetup = ExportStaticMesh->GetBodySetup())
 	{
 		BodySetup->CollisionTraceFlag = DynamicMeshComponent->CollisionType;
 	}
@@ -634,10 +815,19 @@ bool ABlockoutBaseDynamicMeshActor::ExportActorToLevel(ULevel* TargetLevel, FStr
 		return false;
 	}
 
+	ExportedActorTag = FString::Printf(TEXT("__%s_%s_ExportedActor__"), *GetName(), *UniqueAssetName);
+	TArray<AActor*> ExportedActors = UBlockoutLibrary_EditorFunctions::GetOrSelectAllActorsByTag(*ExportedActorTag, false);
+	for (AActor* ExportedActor : ExportedActors)
+	{
+		if (IsValid(ExportedActor))
+		{
+			ExportedActor->Destroy();
+		}
+	}
+
 	ExportedStaticMeshActor->SetActorLabel(FString::Printf(TEXT("%s_Exported"), *GetName()));
 	ExportedStaticMeshActor->GetStaticMeshComponent()->SetStaticMesh(ExportStaticMesh);
 	ExportedStaticMeshActor->Tags.AddUnique(TEXT("ExportedBlockoutActor"));
-	ExportedActorTag = FString::Printf(TEXT("__%s_%s_ExportedActor__"), *GetName(), *UniqueAssetName);
 	ExportedStaticMeshActor->Tags.AddUnique(*ExportedActorTag);
 
 	TArray<UMaterialInterface*> Materials = DynamicMeshComponent->GetMaterials();

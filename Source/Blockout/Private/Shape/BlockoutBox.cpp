@@ -1,6 +1,7 @@
 #include "Shape/BlockoutBox.h"
 
-#include "BlockoutGeometryScriptCompat.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/MeshSubdivideFunctions.h"
 
 ABlockoutBox::ABlockoutBox()
 {
@@ -8,11 +9,11 @@ ABlockoutBox::ABlockoutBox()
 
 void ABlockoutBox::CPPGenerateBlockoutMesh()
 {
-	FFalconGeometryScriptPrimitiveOptions PrimitiveOptions;
+	FGeometryScriptPrimitiveOptions PrimitiveOptions;
 	FTransform Transform;
 	Transform.SetLocation(FVector(BoxSize.X.Value * 0.5f, BoxSize.Y.Value * 0.5f, 0.0f));
 
-	UFalconGeometryLibrary_MeshPrimitive::AppendBox(
+	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 		DynamicMeshComponent->GetDynamicMesh(),
 		PrimitiveOptions,
 		Transform,
@@ -22,9 +23,9 @@ void ABlockoutBox::CPPGenerateBlockoutMesh()
 
 	if (Subdivision > 0)
 	{
-		UFalconGeometryLibrary_MeshSubdivide::ApplyPNTessellation(
+		UGeometryScriptLibrary_MeshSubdivideFunctions::ApplyPNTessellation(
 			DynamicMeshComponent->GetDynamicMesh(),
-			FFalconGeometryScriptPNTessellateOptions(),
+			FGeometryScriptPNTessellateOptions(),
 			Subdivision);
 	}
 }

@@ -1,9 +1,10 @@
 #include "BlockoutBaseGenerator.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "BlockoutLog.h"
 #include "Functions/BlockoutLibrary_BasicFunctions.h"
 #include "Functions/BlockoutLibrary_GeometryFunctions.h"
+#include "GeometryScript/MeshNormalsFunctions.h"
+#include "GeometryScript/MeshRepairFunctions.h"
 
 ABlockoutBaseGenerator::ABlockoutBaseGenerator()
 {
@@ -17,12 +18,12 @@ void ABlockoutBaseGenerator::MeshOptimization()
 		return;
 	}
 
-	UFalconGeometryLibrary_MeshRepair::CompactMesh(Mesh);
+	UGeometryScriptLibrary_MeshRepairFunctions::CompactMesh(Mesh);
 	UBlockoutLibrary_GeometryFunctions::CleanDegenerateTris(Mesh, 1e-4f, bShowDebugLog, true);
 
-	FFalconGeometryScriptSplitNormalsOptions SplitOptions;
+	FGeometryScriptSplitNormalsOptions SplitOptions;
 	SplitOptions.OpeningAngleDeg = bSmoothNormal ? 40.0f : 10.0f;
-	UFalconGeometryLibrary_MeshNormal::ComputeSplitNormals(Mesh, SplitOptions, FFalconGeometryScriptCalculateNormalsOptions());
+	UGeometryScriptLibrary_MeshNormalsFunctions::ComputeSplitNormals(Mesh, SplitOptions, FGeometryScriptCalculateNormalsOptions());
 }
 
 void ABlockoutBaseGenerator::GenerateBlockoutMesh()

@@ -1,8 +1,13 @@
 ﻿#include "Building/BlockoutHouse.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "Functions/BlockoutLibrary_SplineFunctions.h"
 #include "Functions/BlockoutLibrary_GeometryFunctions.h"
+#include "GeometryScript/MeshBasicEditFunctions.h"
+#include "GeometryScript/MeshBooleanFunctions.h"
+#include "GeometryScript/MeshDecompositionFunctions.h"
+#include "GeometryScript/MeshModelingFunctions.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/MeshTransformFunctions.h"
 ABlockoutHouse::ABlockoutHouse()
 {
 	SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType::Grey);
@@ -58,24 +63,25 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 	{
 		UDynamicMesh* BaseFloorMesh = AllocateComputeMesh();
 		
-		UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(
+		UGeometryScriptLibrary_MeshDecompositionFunctions::CopyMeshToMesh(
 			PlanMesh,
 			BaseFloorMesh,
 			BaseFloorMesh
 			);
 
-		FFalconGeometryScriptMeshExtrudeOptions FloorExtrudeOptions;
+		FGeometryScriptMeshExtrudeOptions FloorExtrudeOptions;
 		FloorExtrudeOptions.ExtrudeDistance = BaseFloorThickness.Z;
-		UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(
+		UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 			BaseFloorMesh,
 			FloorExtrudeOptions
 			);
 
-		UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 			DynamicMeshComponent->GetDynamicMesh(),
 			BaseFloorMesh,
 			FTransform::Identity,
-			FFalconGeometryScriptAppendMeshOptions()
+			false,
+			FGeometryScriptAppendMeshOptions()
 			);
 
 		if (bGenerateMiddleFloor)
@@ -83,29 +89,31 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 			if (FloorNum >= 2)
 			{
 				UDynamicMesh* MiddleFloorMesh = AllocateComputeMesh();
-				UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(
+				UGeometryScriptLibrary_MeshDecompositionFunctions::CopyMeshToMesh(
 					PlanMesh,
 					MiddleFloorMesh,
 					MiddleFloorMesh
 					);
 
 				FloorExtrudeOptions.ExtrudeDistance = MiddleFloorThickness;
-				UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(
+				UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 					MiddleFloorMesh,
 					FloorExtrudeOptions
 					);
 
-				UFalconGeometryLibrary_MeshTransform::TranslateMesh(
+				UGeometryScriptLibrary_MeshTransformFunctions::TranslateMesh(
 					MiddleFloorMesh,
 					FVector(0.0f, 0.0f, BaseFloorThickness.Z)
 					);
 
-				UFalconGeometryLibrary_MeshBasicEdit::AppendMeshRepeated(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 					DynamicMeshComponent->GetDynamicMesh(),
 					MiddleFloorMesh,
 					FTransform(FVector(0.0f, 0.0f, (WallHeight.Z-BaseFloorThickness.Z)/float(FloorNum))),
-					FFalconGeometryScriptAppendMeshOptions(),
-					FloorNum-1
+					FloorNum-1,
+					true,
+					false,
+					FGeometryScriptAppendMeshOptions()
 					);
 			}
 		}
@@ -123,14 +131,14 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 			false
 			);
 
-		FFalconGeometryScriptMeshExtrudeOptions WallExtrudeOptions;
+		FGeometryScriptMeshExtrudeOptions WallExtrudeOptions;
 		WallExtrudeOptions.ExtrudeDistance = WallHeight.Z - BaseFloorThickness.Z;
-		UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(
+		UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 			WallMesh,
 			WallExtrudeOptions
 			);
 
-		UFalconGeometryLibrary_MeshTransform::TranslateMesh(
+		UGeometryScriptLibrary_MeshTransformFunctions::TranslateMesh(
 			WallMesh,
 			FVector(0.0f, 0.0f, BaseFloorThickness.Z)
 			);
@@ -142,8 +150,8 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 			UDynamicMesh* AllWindowMesh = AllocateComputeMesh();
 			UDynamicMesh* WindowMesh = AllocateComputeMesh();
 
-			FFalconGeometryScriptPrimitiveOptions PrimitiveOptions;
-			UFalconGeometryLibrary_MeshPrimitive::AppendBox(
+			FGeometryScriptPrimitiveOptions PrimitiveOptions;
+			UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 				WindowMesh,
 				PrimitiveOptions,
 				FTransform::Identity,
@@ -162,51 +170,53 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 					FMath::Clamp(float(i)*IOfCurWindow, 0.0f, 1.0f), ESplineCoordinateSpace::Local, true);
 				AppendTransform.SetLocation(CurLocTransform.GetLocation() + FVector(0.0f, 0.0f, BaseFloorThickness.Z));
 				AppendTransform.SetRotation(FQuat(FRotator(0.0f, FRotator(CurLocTransform.GetRotation()).Yaw,0.0f)));
-				UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 					AllWindowMesh,
 					WindowMesh,
 					AppendTransform,
-					FFalconGeometryScriptAppendMeshOptions()
+					false,
+					FGeometryScriptAppendMeshOptions()
 					);
 			}
 
-			UFalconGeometryLibrary_MeshBasicEdit::AppendMeshRepeated(
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 				AllWindowMesh,
 				AllWindowMesh,
 				FTransform(FVector(0.0f, 0.0f, (WallHeight.Z-BaseFloorThickness.Z)/float(FloorNum))),
-				FFalconGeometryScriptAppendMeshOptions(),
-				FloorNum-1
+				FloorNum-1,
+				true,
+				false,
+				FGeometryScriptAppendMeshOptions()
 				);
-			FFalconGeometryScriptEdgeData Edges;
-			UFalconGeometryLibrary_MeshBoolean::ApplyMeshBoolean(
+			UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshBoolean(
 				WallMesh,
 				FTransform::Identity,
 				AllWindowMesh,
 				FTransform(FVector(0.0f, 0.0f, HoleHeightOffset)),
-				EFalconGeometryScriptBooleanOperation::Subtract,
-				FFalconGeometryScriptMeshBooleanOptions(),
-				Edges
+				EGeometryScriptBooleanOperation::Subtract,
+				FGeometryScriptMeshBooleanOptions()
 				);
 		}
-		UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 			DynamicMeshComponent->GetDynamicMesh(),
 			WallMesh,
 			FTransform::Identity,
-			FFalconGeometryScriptAppendMeshOptions()
+			false,
+			FGeometryScriptAppendMeshOptions()
 			);
 	}
 
 	if (bGenerateRoof)
 	{
 		UDynamicMesh* RoofMesh = AllocateComputeMesh();
-		UFalconGeometryLibrary_MeshDecomposition::CopyMeshToMesh(
+		UGeometryScriptLibrary_MeshDecompositionFunctions::CopyMeshToMesh(
 			PlanMesh,
 			RoofMesh,
 			RoofMesh
 			);
 
 		FVector RidgeDir;
-		FFalconGeometryScriptMeshExtrudeOptions FlatRoofExtrudeOptions;
+		FGeometryScriptMeshExtrudeOptions FlatRoofExtrudeOptions;
 		
 		switch(RoofType)
 		{
@@ -219,25 +229,27 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 				RidgeDir
 				);
 
-			UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 				DynamicMeshComponent->GetDynamicMesh(),
 				RoofMesh,
 				FTransform(FVector(0.0f, 0.0f, WallHeight.Z)),
-				FFalconGeometryScriptAppendMeshOptions()
+				false,
+				FGeometryScriptAppendMeshOptions()
 				);
 			break;
 		case EHouseRoofType::FlatRoof:
 			FlatRoofExtrudeOptions.ExtrudeDistance = RoofThickness;
-			UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(
+			UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 				RoofMesh,
 				FlatRoofExtrudeOptions
 				);
 			
-			UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 				DynamicMeshComponent->GetDynamicMesh(),
 				RoofMesh,
 				FTransform(FVector(0.0f, 0.0f, WallHeight.Z)),
-				FFalconGeometryScriptAppendMeshOptions()
+				false,
+				FGeometryScriptAppendMeshOptions()
 				);
 
 			if (bWithParapet)
@@ -253,16 +265,17 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 					);
 				
 				FlatRoofExtrudeOptions.ExtrudeDistance = ParapetHeight;
-				UFalconGeometryLibrary_MeshModeling::ApplyMeshExtrude_Compatibility_5p0(
+				UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 					ParapetMesh,
 					FlatRoofExtrudeOptions
 					);
 
-				UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 					DynamicMeshComponent->GetDynamicMesh(),
 					ParapetMesh,
 					FTransform(FVector(0.0f, 0.0f, WallHeight.Z+RoofThickness)),
-					FFalconGeometryScriptAppendMeshOptions()
+					false,
+					FGeometryScriptAppendMeshOptions()
 					);
 			}
 			break;

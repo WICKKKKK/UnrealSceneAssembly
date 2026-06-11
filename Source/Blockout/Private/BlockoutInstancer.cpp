@@ -1,10 +1,13 @@
 #include "BlockoutInstancer.h"
 
-#include "BlockoutGeometryScriptCompat.h"
 #include "BlockoutLog.h"
 #include "EngineUtils.h"
 #include "Functions/BlockoutLibrary_BasicFunctions.h"
 #include "Functions/BlockoutLibrary_EditorFunctions.h"
+#include "GeometryScript/MeshBasicEditFunctions.h"
+#include "GeometryScript/MeshBooleanFunctions.h"
+#include "GeometryScript/MeshNormalsFunctions.h"
+#include "GeometryScript/MeshTransformFunctions.h"
 #include "LevelEditor.h"
 #include "ISceneOutliner.h"
 #include "Shape/BlockoutBox.h"
@@ -144,11 +147,12 @@ void ABlockoutInstancer::GetInstanceMesh()
 		BlockoutInstanceNum = 1;
 		if (IsValid(PresetBlockoutActor) && IsValid(PresetBlockoutActor->GetGeneratedMeshComp()))
 		{
-			UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+			UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 				InstanceMeshComp->GetDynamicMesh(),
 				PresetBlockoutActor->GetGeneratedMeshComp()->GetDynamicMesh(),
 				InstanceTransform.ToFTransform(),
-				FFalconGeometryScriptAppendMeshOptions());
+				false,
+				FGeometryScriptAppendMeshOptions());
 		}
 	}
 	else
@@ -164,11 +168,12 @@ void ABlockoutInstancer::GetInstanceMesh()
 				{
 					BlockoutsPivot = Actor->GetActorLocation();
 				}
-				UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(
+				UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 					InstanceMeshComp->GetDynamicMesh(),
 					Actor->GetDynamicMeshComponent()->GetDynamicMesh(),
 					Actor->GetActorTransform() * InstanceTransform.ToFTransform(),
-					FFalconGeometryScriptAppendMeshOptions());
+					false,
+					FGeometryScriptAppendMeshOptions());
 				Actor->SetActorHiddenInEditor(!bShowSelectedActors);
 				Actor->bHiddenInGame = !bShowSelectedActors;
 				Actor->bEnableCollisions = bShowSelectedActors;
@@ -180,27 +185,27 @@ void ABlockoutInstancer::GetInstanceMesh()
 void ABlockoutInstancer::PreprocessInstanceMesh()
 {
 	InstanceMesh = AllocateComputeMesh();
-	UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(InstanceMesh, InstanceMeshComp->GetDynamicMesh(), FTransform::Identity, FFalconGeometryScriptAppendMeshOptions());
+	UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(InstanceMesh, InstanceMeshComp->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 
 	if (bUnion && BlockoutInstanceNum > 1)
 	{
-		UFalconGeometryLibrary_MeshBoolean::ApplyMeshSelfUnion(InstanceMesh, FFalconGeometryScriptMeshSelfUnionOptions());
+		UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshSelfUnion(InstanceMesh, FGeometryScriptMeshSelfUnionOptions());
 	}
 
 	if (bFilpNormal && !bSubtractive)
 	{
-		UFalconGeometryLibrary_MeshNormal::FlipNormals(InstanceMesh);
+		UGeometryScriptLibrary_MeshNormalsFunctions::FlipNormals(InstanceMesh);
 	}
 
 	if (BlockoutInstanceNum > 0)
 	{
-		UFalconGeometryLibrary_MeshTransform::TranslateMesh(InstanceMesh, BlockoutsPivot * -1.0f);
+		UGeometryScriptLibrary_MeshTransformFunctions::TranslateMesh(InstanceMesh, BlockoutsPivot * -1.0f);
 	}
 }
 
 void ABlockoutInstancer::CPPInstanceMeshPlacement()
 {
-	UFalconGeometryLibrary_MeshBasicEdit::AppendMesh(DynamicMeshComponent->GetDynamicMesh(), InstanceMesh, FTransform::Identity, FFalconGeometryScriptAppendMeshOptions());
+	UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(DynamicMeshComponent->GetDynamicMesh(), InstanceMesh, FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 }
 
 void ABlockoutInstancer::InstanceMeshPlacement()
