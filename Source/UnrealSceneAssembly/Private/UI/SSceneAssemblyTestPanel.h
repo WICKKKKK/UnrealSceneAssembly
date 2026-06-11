@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Styling/SlateTypes.h"
 #include "Types/SlateEnums.h"
 #include "UI/SceneAssemblyTestSettings.h"
 #include "UObject/StrongObjectPtr.h"
@@ -98,6 +99,7 @@ private:
 	TSharedPtr<FSlateDynamicImageBrush> ConceptArtBrush;
 	TSharedPtr<SVerticalBox> CropPreviewContainer;
 	TArray<TSharedPtr<FCropPreviewEntry>> CropPreviews;
+	FProgressBarStyle JobProgressBarStyle;
 
 	FString SelectionSummary = TEXT("已选 0 个 Actor（白盒 0 个）。");
 	int32 SelectedCount = 0;

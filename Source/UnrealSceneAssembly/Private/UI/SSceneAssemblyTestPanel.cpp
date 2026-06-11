@@ -30,6 +30,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/StyleColors.h"
 #include "UnrealSceneAssembly.h"
 #include "EngineUtils.h"
 #include "Widgets/Input/SButton.h"
@@ -276,6 +277,12 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 	SettingsDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 	SettingsDetailsView->SetObject(Settings.Get());
 
+	JobProgressBarStyle
+		.SetBackgroundImage(FSlateColorBrush(FStyleColors::Recessed))
+		.SetFillImage(FSlateColorBrush(FStyleColors::Primary))
+		.SetMarqueeImage(FSlateColorBrush(FStyleColors::Primary))
+		.SetEnableFillAnimation(false);
+
 	ChildSlot
 	[
 		SNew(SBorder)
@@ -356,9 +363,14 @@ void SSceneAssemblyTestPanel::Construct(const FArguments& InArgs)
 							]
 							+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 							[
-								SNew(SProgressBar)
+								SNew(SBox)
+								.HeightOverride(8.0f)
 								.Visibility(this, &SSceneAssemblyTestPanel::GetJobProgressVisibility)
-								.Percent(this, &SSceneAssemblyTestPanel::GetJobProgress)
+								[
+									SNew(SProgressBar)
+									.Style(&JobProgressBarStyle)
+									.Percent(this, &SSceneAssemblyTestPanel::GetJobProgress)
+								]
 							]
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
