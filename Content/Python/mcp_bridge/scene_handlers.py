@@ -14,6 +14,26 @@ import unreal
 _MISSING = object()
 
 
+def _asset_path_no_suffix(path: Any) -> str:
+    value = str(path or "").strip()
+    if not value or value == "None":
+        return ""
+    slash_index = value.rfind("/")
+    dot_index = value.find(".", slash_index + 1)
+    return value[:dot_index] if dot_index >= 0 else value
+
+
+def _object_path_from_asset_path(path: Any) -> str:
+    value = str(path or "").strip()
+    if not value or value == "None":
+        return ""
+    slash_index = value.rfind("/")
+    if value.find(".", slash_index + 1) >= 0:
+        return value
+    asset_name = value[slash_index + 1 :] if slash_index >= 0 else value
+    return f"{value}.{asset_name}" if asset_name else value
+
+
 class SceneCommandError(RuntimeError):
     """Raised when a scene command receives invalid input."""
 
@@ -143,7 +163,7 @@ def _handle_find_actors(params: dict[str, Any], context: dict[str, Any]) -> dict
             continue
         if tag and str(tag) not in _actor_tags(actor):
             continue
-        if asset_path and _actor_asset_path(actor) != str(asset_path):
+        if asset_path and _actor_asset_path(actor) != _asset_path_no_suffix(asset_path):
             continue
         matches.append(_actor_summary(actor, include_bounds=bool(params.get("include_bounds", False))))
         if limit > 0 and len(matches) >= limit:
@@ -433,16 +453,26 @@ def _load_asset(asset_path: str) -> Any:
 
 
 def _try_load_asset(asset_path: str) -> Any:
-    try:
-        asset = unreal.EditorAssetLibrary.load_asset(asset_path)
-        if asset:
-            return asset
-    except Exception:
-        pass
-    try:
-        return unreal.load_asset(asset_path)
-    except Exception:
-        return None
+    candidates = []
+    for candidate in (asset_path, _object_path_from_asset_path(asset_path)):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        try:
+            asset = unreal.EditorAssetLibrary.load_asset(candidate)
+            if asset:
+                return asset
+        except Exception:
+            pass
+    for candidate in candidates:
+        try:
+            asset = unreal.load_asset(candidate)
+            if asset:
+                return asset
+        except Exception:
+            pass
+    return None
 
 
 def _actor_from_params(params: dict[str, Any]) -> Any:
@@ -654,7 +684,7 @@ def _actor_asset_path(actor: Any) -> str | None:
         mesh = component.get_editor_property("static_mesh")
     except Exception:
         mesh = getattr(component, "static_mesh", None)
-    return mesh.get_path_name() if mesh and hasattr(mesh, "get_path_name") else None
+    return _asset_path_no_suffix(mesh.get_path_name()) if mesh and hasattr(mesh, "get_path_name") else None
 
 
 def _actor_tags(actor: Any) -> list[str]:

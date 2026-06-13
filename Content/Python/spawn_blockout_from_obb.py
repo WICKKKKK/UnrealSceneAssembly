@@ -93,7 +93,7 @@ def _static_mesh_path(actor):
     if not callable(get_path_name):
         return None
     path = get_path_name()
-    return path if path and path != "None" else None
+    return backend.asset_path_no_suffix(path) if path and path != "None" else None
 
 
 def _asset_id(asset_path):

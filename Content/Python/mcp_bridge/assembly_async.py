@@ -238,6 +238,9 @@ class AssemblyJob:
                 item["status"] = "no_candidates"
                 item["error"] = "Image search returned no candidates with asset_path and bounding_box."
                 return item
+            orient_mode = assembly_test._orient_mode(self.params)
+            item["orient_mode"] = orient_mode
+            candidates = assembly_test._with_orientation(candidates, data_uri, orient_mode, timeout)
             item["status"] = "searched"
             item["candidates"] = candidates
             return item
@@ -288,7 +291,9 @@ class AssemblyJob:
             try:
                 actor_path = str(item.get("actor_path") or "")
                 actor = _find_actor_by_path(actor_path)
-                settings = _settings_struct(self.params.get("settings") or assembly_test._settings_from_params(self.params))
+                settings_payload = self.params.get("settings") or assembly_test._settings_from_params(self.params)
+                settings_payload = assembly_test._settings_with_camera(settings_payload, self.capture_context, str(item.get("orient_mode") or assembly_test._orient_mode(self.params)))
+                settings = _settings_struct(settings_payload)
                 scene_obb = _solver_library().get_actor_obb(actor)
                 candidates = item.pop("candidates", [])
                 results = [_placement_result_dict(result) for result in _solver_library().solve_placement(scene_obb, _candidate_structs(candidates), settings)]

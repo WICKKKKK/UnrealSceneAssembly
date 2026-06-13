@@ -1,4 +1,6 @@
+import base64
 import json
+import os
 import time
 
 import unreal
@@ -12,20 +14,31 @@ DATA_URI_PREFIX = "data:image/png;base64,"
 VERIFY_OUTPUT_FIELDS = common.RESERVED_OUTPUT_FIELDS + ["bounding_box", "ai_tags", "ai_description"]
 
 
+def _chunks(items, size):
+    size = max(1, int(size))
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
 def _shared_fields(item):
     fields = {
         "thumbnail_url": item["thumbnail_url"],
         "asset_name": item["asset_name"],
         "asset_path": item["asset_path"],
         "asset_type": "StaticMesh",
-        "public_path": item["public_path"],
     }
+    if item.get("orient_thumbnail_url") is not None:
+        fields["orient_thumbnail_url"] = item.get("orient_thumbnail_url")
     if item.get("bounding_box") is not None:
         fields["bounding_box"] = item.get("bounding_box")
     if item.get("ai_tags") is not None:
         fields["ai_tags"] = item.get("ai_tags")
     if item.get("ai_description") is not None:
         fields["ai_description"] = item.get("ai_description")
+    if item.get("orient_pose") is not None:
+        fields["orient_pose"] = item.get("orient_pose")
+    if item.get("thumbnail_camera") is not None:
+        fields["thumbnail_camera"] = item.get("thumbnail_camera")
     return fields
 
 
@@ -150,7 +163,7 @@ class Dinov3Provider(object):
             "POST",
             "/dinov3/embed/batch",
             payload,
-            timeout=config.EMBED_BATCH_TIMEOUT_SECONDS,
+            timeout=config.HTTP_TIMEOUT_SECONDS,
         )
         data = common.unwrap_data(envelope)
         if not isinstance(data, dict):
@@ -281,7 +294,7 @@ class ClipProvider(object):
             "POST",
             "/clip/embed/image",
             payload,
-            timeout=getattr(config, "EMBED_BATCH_TIMEOUT_SECONDS", config.HTTP_TIMEOUT_SECONDS),
+            timeout=config.HTTP_TIMEOUT_SECONDS,
         )
         data = common.unwrap_data(envelope)
         return self._parse_embedding_results(data, len(thumbnail_paths))
@@ -341,43 +354,326 @@ def _add_provider_row(provider, item, embed_result, rows):
     rows.append(provider.build_row(item, embed_result))
 
 
+def _pose_from_predict_result(result):
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected Orient predict response: {0}".format(result))
+    ref = result.get("ref")
+    if not isinstance(ref, dict):
+        raise RuntimeError("Orient predict response missing ref pose")
+    return {
+        "azimuth": float(ref.get("azimuth", 0.0)),
+        "polar": float(ref.get("polar", 0.0)),
+        "rotation": float(ref.get("rotation", 0.0)),
+        "num_directions": int(ref.get("num_directions", 1) or 0),
+    }
+
+
+def _write_data_uri_image(data_uri, out_path):
+    if not isinstance(data_uri, str) or "," not in data_uri:
+        raise RuntimeError("Orient preprocess response did not include a data URI image")
+    _, encoded = data_uri.split(",", 1)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "wb") as image_file:
+        image_file.write(base64.b64decode(encoded))
+
+
+def _orient_thumbnail_data_uri(thumbnail_path):
+    return DATA_URI_PREFIX + common.encode_thumbnail_base64(thumbnail_path)
+
+
+def _init_orient_thumbnail_paths(item):
+    if item.get("orient_out_path"):
+        return
+    orient_out_path, _ = common.orient_thumbnail_paths(item["asset_id"])
+    item["orient_out_path"] = orient_out_path
+
+
+def enrich_orient_metadata(item):
+    item.pop("orient_pose", None)
+    item.pop("orient_thumbnail_url", None)
+    item.pop("orient_image_data_uri", None)
+    _init_orient_thumbnail_paths(item)
+    payload = {"image": _orient_thumbnail_data_uri(item["out_path"])}
+    _, envelope = common.request_json(
+        "POST",
+        "/orient/preprocess",
+        payload,
+        timeout=config.HTTP_TIMEOUT_SECONDS,
+    )
+    data = common.unwrap_data(envelope)
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected Orient preprocess response: {0}".format(data))
+    orient_image_data_uri = data.get("image_base64")
+    _write_data_uri_image(orient_image_data_uri, item["orient_out_path"])
+    upload_results = common.upload_files_batch([item["orient_out_path"]], conflict_strategy="overwrite")
+    common.apply_uploaded_orient_urls([item], upload_results)
+
+    payload = {
+        "image_ref": orient_image_data_uri,
+        "do_rm_bkg_ref": False,
+        "do_rm_bkg_tgt": False,
+    }
+    _, envelope = common.request_json(
+        "POST",
+        "/orient/predict",
+        payload,
+        timeout=config.HTTP_TIMEOUT_SECONDS,
+    )
+    item["orient_pose"] = _pose_from_predict_result(common.unwrap_data(envelope))
+
+
+def _orient_preprocess_batch(items):
+    payload = {"images": [_orient_thumbnail_data_uri(item["out_path"]) for item in items]}
+    _, envelope = common.request_json(
+        "POST",
+        "/orient/preprocess/batch",
+        payload,
+        timeout=config.HTTP_TIMEOUT_SECONDS,
+    )
+    data = common.unwrap_data(envelope)
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected Orient preprocess batch response: {0}".format(data))
+    results = data.get("results")
+    if not isinstance(results, list) or len(results) != len(items):
+        raise RuntimeError(
+            "Orient preprocess batch count mismatch: expected {0}, got {1}".format(
+                len(items),
+                len(results) if isinstance(results, list) else "<missing>",
+            )
+        )
+
+    for item, result in zip(items, results):
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected Orient preprocess batch item: {0}".format(result))
+        _init_orient_thumbnail_paths(item)
+        orient_image_data_uri = result.get("image_base64")
+        item["orient_image_data_uri"] = orient_image_data_uri
+        _write_data_uri_image(orient_image_data_uri, item["orient_out_path"])
+
+
+def _orient_predict_batch(items):
+    predict_items = []
+    for item in items:
+        image_ref = item.get("orient_image_data_uri")
+        if not image_ref:
+            raise RuntimeError("Orient preprocess image data missing for {0}".format(item.get("asset_path")))
+        predict_items.append(
+            {
+                "image_ref": image_ref,
+                "do_rm_bkg_ref": False,
+                "do_rm_bkg_tgt": False,
+            }
+        )
+    payload = {
+        "items": predict_items,
+    }
+    try:
+        _, envelope = common.request_json(
+            "POST",
+            "/orient/predict/batch",
+            payload,
+            timeout=config.HTTP_TIMEOUT_SECONDS,
+        )
+        data = common.unwrap_data(envelope)
+        if not isinstance(data, dict):
+            raise RuntimeError("Unexpected Orient predict batch response: {0}".format(data))
+        results = data.get("results")
+        if not isinstance(results, list) or len(results) != len(items):
+            raise RuntimeError(
+                "Orient predict batch count mismatch: expected {0}, got {1}".format(
+                    len(items),
+                    len(results) if isinstance(results, list) else "<missing>",
+                )
+            )
+
+        for item, result in zip(items, results):
+            item["orient_pose"] = _pose_from_predict_result(result)
+    finally:
+        for item in items:
+            item.pop("orient_image_data_uri", None)
+
+
+def _fallback_orient_metadata(items, context, exc):
+    if not items:
+        return
+    unreal.log_warning(
+        "[SceneAssembly] {0} failed for {1} thumbnails, falling back to single-image orient: {2}".format(
+            context,
+            len(items),
+            exc,
+        )
+    )
+    for item in items:
+        item.pop("orient_image_data_uri", None)
+        try:
+            enrich_orient_metadata(item)
+        except Exception as item_exc:
+            unreal.log_warning("[SceneAssembly] Orient metadata failed for {0}: {1}".format(item["asset_path"], item_exc))
+
+
+def _orient_preprocess_chunks(items):
+    batch_size = max(1, int(getattr(config, "ORIENT_PREPROCESS_BATCH_SIZE", 1)))
+    preprocessed = []
+    for chunk in _chunks(items, batch_size):
+        try:
+            _orient_preprocess_batch(chunk)
+            preprocessed.extend(chunk)
+        except Exception as exc:
+            _fallback_orient_metadata(chunk, "Orient preprocess chunk", exc)
+    return preprocessed
+
+
+def _orient_predict_chunks(items):
+    batch_size = max(1, int(getattr(config, "ORIENT_PREDICT_BATCH_SIZE", 1)))
+    for chunk in _chunks(items, batch_size):
+        try:
+            _orient_predict_batch(chunk)
+        except Exception as exc:
+            _fallback_orient_metadata(chunk, "Orient predict chunk", exc)
+
+
+def enrich_orient_metadata_batch(items):
+    if not items:
+        return
+
+    for item in items:
+        item.pop("orient_pose", None)
+        item.pop("orient_thumbnail_url", None)
+        item.pop("orient_image_data_uri", None)
+
+    batch_started_at = time.perf_counter()
+    unreal.log("[SceneAssembly] Orient metadata batch: {0} thumbnails".format(len(items)))
+    stage_started_at = time.perf_counter()
+    preprocessed_items = _orient_preprocess_chunks(items)
+    unreal.log(
+        "[SceneAssembly] Orient preprocess batch: {0}/{1} thumbnails in {2:.1f}s".format(
+            len(preprocessed_items),
+            len(items),
+            time.perf_counter() - stage_started_at,
+        )
+    )
+    if not preprocessed_items:
+        unreal.log_warning(
+            "[SceneAssembly] Orient metadata batch done: 0/{0} thumbnails in {1:.1f}s".format(
+                len(items),
+                time.perf_counter() - batch_started_at,
+            )
+        )
+        return
+
+    try:
+        stage_started_at = time.perf_counter()
+        upload_results = common.upload_files_batch(
+            [item["orient_out_path"] for item in preprocessed_items],
+            conflict_strategy="overwrite",
+        )
+        common.apply_uploaded_orient_urls(preprocessed_items, upload_results)
+        unreal.log(
+            "[SceneAssembly] Orient thumbnail upload: {0} files in {1:.1f}s".format(
+                len(preprocessed_items),
+                time.perf_counter() - stage_started_at,
+            )
+        )
+    except Exception as exc:
+        _fallback_orient_metadata(preprocessed_items, "Orient thumbnail upload", exc)
+        unreal.log(
+            "[SceneAssembly] Orient metadata batch done: {0} thumbnails in {1:.1f}s".format(
+                len(items),
+                time.perf_counter() - batch_started_at,
+            )
+        )
+        return
+
+    stage_started_at = time.perf_counter()
+    _orient_predict_chunks(preprocessed_items)
+    unreal.log(
+        "[SceneAssembly] Orient predict batch: {0} thumbnails in {1:.1f}s".format(
+            len(preprocessed_items),
+            time.perf_counter() - stage_started_at,
+        )
+    )
+    unreal.log(
+        "[SceneAssembly] Orient metadata batch done: {0} thumbnails in {1:.1f}s".format(
+            len(items),
+            time.perf_counter() - batch_started_at,
+        )
+    )
+
+
 def _flush_provider_embeddings(provider, pending, rows, failed):
     if not pending:
         return 0
 
+    started_at = time.perf_counter()
     unreal.log("[SceneAssembly] {0} embedding batch: {1} thumbnails".format(provider.display_name, len(pending)))
     succeeded = 0
-    try:
-        embed_results = provider.embed_batch([item["out_path"] for item in pending])
-    except Exception as exc:
-        unreal.log_warning(
-            "[SceneAssembly] {0} batch embedding failed, falling back to single-image embedding: {1}".format(
-                provider.display_name,
-                exc,
+    batch_size = max(1, int(getattr(config, "EMBED_BATCH_SIZE", 1)))
+    for chunk in _chunks(pending, batch_size):
+        try:
+            embed_results = provider.embed_batch([item["out_path"] for item in chunk])
+        except Exception as exc:
+            unreal.log_warning(
+                "[SceneAssembly] {0} embedding chunk failed for {1} thumbnails, falling back to single-image embedding: {2}".format(
+                    provider.display_name,
+                    len(chunk),
+                    exc,
+                )
             )
-        )
-        for item in pending:
+            for item in chunk:
+                try:
+                    embed_result = provider.embed_single(item["out_path"])
+                    _add_provider_row(provider, item, embed_result, rows)
+                    succeeded += 1
+                except Exception as item_exc:
+                    common.record_failed_asset(failed, item["asset_path"], item_exc)
+            continue
+
+        for item, embed_result in zip(chunk, embed_results):
             try:
-                embed_result = provider.embed_single(item["out_path"])
                 _add_provider_row(provider, item, embed_result, rows)
                 succeeded += 1
-            except Exception as item_exc:
-                common.record_failed_asset(failed, item["asset_path"], item_exc)
-        return succeeded
-
-    for item, embed_result in zip(pending, embed_results):
-        try:
-            _add_provider_row(provider, item, embed_result, rows)
-            succeeded += 1
-        except Exception as exc:
-            common.record_failed_asset(failed, item["asset_path"], exc)
+            except Exception as exc:
+                common.record_failed_asset(failed, item["asset_path"], exc)
+    unreal.log(
+        "[SceneAssembly] {0} embedding batch done: {1}/{2} thumbnails in {3:.1f}s".format(
+            provider.display_name,
+            succeeded,
+            len(pending),
+            time.perf_counter() - started_at,
+        )
+    )
     return succeeded
 
 
-def _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider):
+def _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider, shared_failed=None):
     if not pending:
         return
 
+    try:
+        stage_started_at = time.perf_counter()
+        upload_results = common.upload_files_batch(
+            [item["out_path"] for item in pending],
+            conflict_strategy="overwrite",
+        )
+        common.apply_uploaded_thumbnail_urls(pending, upload_results)
+        unreal.log(
+            "[SceneAssembly] Thumbnail upload: {0} files in {1:.1f}s".format(
+                len(pending),
+                time.perf_counter() - stage_started_at,
+            )
+        )
+    except Exception as exc:
+        if shared_failed is None:
+            raise
+        for item in pending:
+            common.record_failed_asset(shared_failed, item["asset_path"], exc)
+        pending[:] = []
+        return
+
+    if getattr(config, "ORIENT_ENABLED", True):
+        enrich_orient_metadata_batch(pending)
+    else:
+        unreal.log("[SceneAssembly] Orient disabled; skipping preprocess/upload/predict for {0} thumbnails.".format(len(pending)))
     enrich_ai_metadata(pending)
     for provider in providers:
         rows = rows_by_provider[provider.name]
@@ -388,23 +684,26 @@ def _process_pending_batch(pending, providers, rows_by_provider, failed_by_provi
 
 
 def _prepare_asset_item(asset_data, index, total):
-    asset_id, asset_name, asset_path = common.asset_identity(asset_data)
-    out_path, public_path, thumbnail_url = common.thumbnail_paths(asset_id)
+    asset_id, asset_name, asset_path, object_path = common.asset_identity(asset_data)
+    out_path, thumbnail_url = common.thumbnail_paths(asset_id)
     unreal.log("[SceneAssembly] [{0}/{1}] {2}".format(index, total, asset_path))
 
-    bounding_box = common.asset_bounding_box(asset_data, asset_path)
-    if not common.export_thumbnail(asset_path, out_path):
+    bounding_box = common.asset_bounding_box(asset_data, object_path)
+    thumbnail_exported, thumbnail_camera = common.export_thumbnail_with_camera(object_path, out_path)
+    if not thumbnail_exported:
         raise RuntimeError("thumbnail export returned false")
 
-    return {
+    item = {
         "asset_id": asset_id,
         "asset_name": asset_name,
         "asset_path": asset_path,
         "out_path": out_path,
         "thumbnail_url": thumbnail_url,
-        "public_path": public_path,
         "bounding_box": bounding_box,
     }
+    if thumbnail_camera is not None:
+        item["thumbnail_camera"] = thumbnail_camera
+    return item
 
 
 def ingest_static_meshes(mode="all"):
@@ -432,21 +731,41 @@ def ingest_static_meshes(mode="all"):
     succeeded_by_provider = {provider.name: 0 for provider in providers}
     shared_failed = []
     pending = []
+    orient_enabled = bool(getattr(config, "ORIENT_ENABLED", True))
     embed_batch_size = max(1, int(getattr(config, "EMBED_BATCH_SIZE", 1)))
+    orient_preprocess_batch_size = max(1, int(getattr(config, "ORIENT_PREPROCESS_BATCH_SIZE", embed_batch_size)))
+    orient_predict_batch_size = max(1, int(getattr(config, "ORIENT_PREDICT_BATCH_SIZE", orient_preprocess_batch_size)))
+    ingest_batch_size = max(1, int(getattr(config, "INGEST_BATCH_SIZE", 1)))
+    pending_batch_size = max(
+        embed_batch_size,
+        ingest_batch_size,
+        orient_preprocess_batch_size if orient_enabled else 1,
+        orient_predict_batch_size if orient_enabled else 1,
+    )
+    unreal.log(
+        "[SceneAssembly] Batch sizes: round={0}, embed={1}, orient_pre={2}, orient_pred={3}, ingest={4}".format(
+            pending_batch_size,
+            embed_batch_size,
+            orient_preprocess_batch_size,
+            orient_predict_batch_size,
+            ingest_batch_size,
+        )
+    )
+    unreal.log("[SceneAssembly] Orient enabled: {0}".format(orient_enabled))
 
     for index, asset_data in enumerate(asset_data_list, start=1):
         asset_path = "<unknown>"
         try:
-            asset_path = common.soft_object_path_string(asset_data)
+            asset_path = common.asset_path_no_suffix(common.soft_object_path_string(asset_data))
             pending.append(_prepare_asset_item(asset_data, index, total))
         except Exception as exc:
             _record_prepare_failure(shared_failed, asset_path, exc)
             continue
 
-        if len(pending) >= embed_batch_size:
-            _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider)
+        if len(pending) >= pending_batch_size:
+            _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider, shared_failed)
 
-    _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider)
+    _process_pending_batch(pending, providers, rows_by_provider, failed_by_provider, succeeded_by_provider, shared_failed)
     for provider in providers:
         common.flush_batches(
             rows_by_provider[provider.name],

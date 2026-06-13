@@ -36,6 +36,17 @@ def clip_api_url(path: str, cfg: dict[str, Any]) -> str:
     return f"{cfg['base_url']}{cfg['api_prefix']}{path}"
 
 
+def absolute_public_url(url_or_path: str, cfg: dict[str, Any] | None = None) -> str:
+    value = str(url_or_path or "").strip()
+    if not value:
+        return ""
+    lower = value.lower()
+    if lower.startswith(("http://", "https://", "data:")):
+        return value
+    cfg = cfg or clip_config()
+    return f"{cfg['base_url']}/{value.lstrip('/')}"
+
+
 def clip_request_json(path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
     cfg = clip_config()
     body = json.dumps(payload).encode("utf-8")
@@ -83,10 +94,12 @@ def clip_error(exc: Exception) -> dict[str, Any]:
     }
 
 
-def default_clip_output_fields(include_bounding_box: bool = False) -> list[str]:
-    fields = ["thumbnail_url", "asset_name", "asset_path", "asset_type", "public_path"]
+def default_clip_output_fields(include_bounding_box: bool = False, include_orient: bool = True) -> list[str]:
+    fields = ["thumbnail_url", "asset_name", "asset_path", "asset_type"]
     if include_bounding_box:
         fields.append("bounding_box")
+    if include_orient:
+        fields.extend(["orient_thumbnail_url", "orient_pose", "thumbnail_camera"])
     return fields
 
 
@@ -257,6 +270,7 @@ def image_data_uri_to_base64(image_url: str) -> str:
 def solver_settings_payload(
     scale_mode: str | None = None,
     combine_mode: str | None = None,
+    orient_mode: str | None = None,
     weight_semantic: float | None = None,
     weight_geometry: float | None = None,
     scale_sensitivity: float | None = None,
@@ -270,6 +284,8 @@ def solver_settings_payload(
         settings["scale_mode"] = scale_mode
     if combine_mode is not None:
         settings["combine_mode"] = combine_mode
+    if orient_mode is not None:
+        settings["orient_mode"] = orient_mode
     if weight_semantic is not None:
         settings["weight_semantic"] = weight_semantic
     if weight_geometry is not None:
@@ -307,11 +323,25 @@ def candidate_from_hit(hit: Any) -> dict[str, Any] | None:
     if not asset_path or not isinstance(bounding_box, dict):
         return None
     score = hit_field(hit, "score", hit_field(hit, "distance", 1.0))
-    return {
+    candidate = {
         "asset_path": str(asset_path),
         "bounding_box": bounding_box,
         "semantic_score": float(score if score is not None else 1.0),
     }
+    thumbnail_url = hit_field(hit, "thumbnail_url")
+    orient_thumbnail_url = hit_field(hit, "orient_thumbnail_url")
+    orient_pose = hit_field(hit, "orient_pose")
+    thumbnail_camera = hit_field(hit, "thumbnail_camera")
+    if thumbnail_url:
+        candidate["thumbnail_url"] = str(thumbnail_url)
+    if orient_thumbnail_url:
+        candidate["orient_thumbnail_url"] = str(orient_thumbnail_url)
+        candidate["orient_thumbnail_abs_url"] = absolute_public_url(str(orient_thumbnail_url))
+    if isinstance(orient_pose, dict):
+        candidate["orient_pose"] = orient_pose
+    if isinstance(thumbnail_camera, dict):
+        candidate["thumbnail_camera"] = thumbnail_camera
+    return candidate
 
 
 def candidates_from_hits(hits: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import math
 import random
+import urllib.request
 from typing import Any
 
 import unreal
 
 from clip_retrieval import (
+    absolute_public_url,
     candidates_from_hits,
     clip_search_assets_by_image,
+    clip_request_json,
     dinov3_search_assets_by_image,
     default_clip_output_fields,
 )
@@ -203,7 +208,13 @@ def _solve_one(actor: Any, id_entry: dict[str, Any], capture_context: dict[str, 
             item["error"] = "Image search returned no candidates with asset_path and bounding_box."
             return item
 
-        settings = _settings_struct(params.get("settings") or _settings_from_params(params))
+        orient_mode = _orient_mode(params)
+        item["orient_mode"] = orient_mode
+        candidates = _with_orientation(candidates, data_uri, orient_mode, timeout)
+
+        settings_payload = params.get("settings") or _settings_from_params(params)
+        settings_payload = _settings_with_camera(settings_payload, capture_context, orient_mode)
+        settings = _settings_struct(settings_payload)
         scene_obb = _solver_library().get_actor_obb(actor)
         results = [_placement_result_dict(result) for result in _solver_library().solve_placement(scene_obb, _candidate_structs(candidates), settings)]
         item["results"] = results
@@ -319,6 +330,7 @@ def _capture_context(params: dict[str, Any]) -> dict[str, Any]:
         "missing_actor_paths": missing_actor_paths,
         "image_width": image_width,
         "image_height": image_height,
+        "params": dict(params),
     }
 
 
@@ -459,6 +471,10 @@ def _settings_from_params(params: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "scale_mode",
         "combine_mode",
+        "orient_mode",
+        "concept_camera_rotation",
+        "orient_basis_rotation",
+        "thumbnail_camera_rotation",
         "weight_semantic",
         "weight_geometry",
         "scale_sensitivity",
@@ -486,6 +502,214 @@ def _retrieval_model(params: dict[str, Any]) -> str:
     if value in {"dinov3", "dino", "dino_v3"}:
         return "dinov3"
     return "clip"
+
+
+def _orient_mode(params: dict[str, Any]) -> str:
+    value = str(params.get("orient_mode") or "Precomputed").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"legacy", "off", "none"}:
+        return "Legacy"
+    if value in {"dual", "dual_image", "dualimage", "two_image", "twoimage"}:
+        return "DualImage"
+    return "Precomputed"
+
+
+def _settings_with_camera(settings: dict[str, Any], capture_context: dict[str, Any], orient_mode: str) -> dict[str, Any]:
+    output = dict(settings or {})
+    output["orient_mode"] = orient_mode
+    camera_rotation = _capture_camera_rotation(capture_context)
+    if camera_rotation is not None:
+        output["concept_camera_rotation"] = camera_rotation
+    raw_params = capture_context.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
+    for key in ("orient_basis_rotation", "thumbnail_camera_rotation"):
+        if key in params and key not in output:
+            output[key] = params[key]
+    return output
+
+
+def _capture_camera_rotation(capture_context: dict[str, Any]) -> Any:
+    capture_data = capture_context.get("capture_data")
+    camera = capture_data.get("camera") if isinstance(capture_data, dict) else None
+    rotation = camera.get("rotation") if isinstance(camera, dict) else None
+    return rotation if isinstance(rotation, dict) else None
+
+
+def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mode: str, timeout: float) -> list[dict[str, Any]]:
+    if orient_mode == "Legacy":
+        return candidates
+    if orient_mode == "DualImage":
+        return _with_dual_image_orientation(candidates, data_uri, timeout)
+    return _with_precomputed_orientation(candidates, data_uri, timeout)
+
+
+def _with_precomputed_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float) -> list[dict[str, Any]]:
+    response = _orient_predict(data_uri, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=timeout)
+    crop_pose = response.get("ref") if isinstance(response, dict) else None
+    if not isinstance(crop_pose, dict):
+        return candidates
+    output = []
+    for candidate in candidates:
+        item = dict(candidate)
+        thumb_pose = candidate.get("orient_pose")
+        if isinstance(thumb_pose, dict):
+            rel = _relative_pose_from_absolute(crop_pose, thumb_pose)
+            item["relative_orientation"] = rel
+            item["relative_orientation_axes"] = _pose_axes(rel)
+            item["num_directions"] = int(thumb_pose.get("num_directions", 1) or 0)
+            if isinstance(candidate.get("thumbnail_camera"), dict):
+                item["thumbnail_camera"] = candidate.get("thumbnail_camera")
+        output.append(item)
+    return output
+
+
+def _candidate_orientation_image_ref(candidate: dict[str, Any]) -> str:
+    return str(
+        candidate.get("orient_thumbnail_abs_url")
+        or absolute_public_url(str(candidate.get("orient_thumbnail_url") or candidate.get("thumbnail_url") or ""))
+        or ""
+    ).strip()
+
+
+def _http_image_to_data_uri(image_ref: str, timeout: float) -> str:
+    value = str(image_ref or "").strip()
+    if not value:
+        return ""
+    if value.lower().startswith("data:"):
+        return value
+    url = absolute_public_url(value)
+    request = urllib.request.Request(url, headers={"Accept": "image/*"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        image_bytes = response.read()
+        content_type = response.headers.get_content_type() if hasattr(response.headers, "get_content_type") else None
+    if not image_bytes:
+        raise RuntimeError("empty image response: {0}".format(url))
+    if not content_type:
+        content_type = "image/png"
+    return "data:{0};base64,{1}".format(content_type, base64.b64encode(image_bytes).decode("ascii"))
+
+
+def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float) -> list[dict[str, Any]]:
+    image_refs = [_candidate_orientation_image_ref(candidate) for candidate in candidates]
+    if any(not image_ref for image_ref in image_refs):
+        return candidates
+    try:
+        image_tgts = [_http_image_to_data_uri(image_ref, timeout) for image_ref in image_refs]
+    except Exception as exc:
+        unreal.log_warning("[SceneAssembly] DualImage orient target download failed: {0}".format(exc))
+        return candidates
+    payload = {
+        "image_ref": data_uri,
+        "image_tgts": image_tgts,
+        "do_rm_bkg_ref": True,
+        "do_rm_bkg_tgt": False,
+    }
+    response = clip_request_json("/orient/predict/shared_ref", payload, timeout=timeout)
+    results = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(results, list):
+        return candidates
+    if len(results) != len(candidates):
+        return candidates
+    output = []
+    for candidate, result in zip(candidates, results):
+        item = dict(candidate)
+        rel = result.get("rel") if isinstance(result, dict) else None
+        ref = result.get("ref") if isinstance(result, dict) else None
+        if isinstance(rel, dict):
+            item["relative_orientation"] = rel
+            item["relative_orientation_axes"] = _pose_axes(rel)
+            if isinstance(ref, dict):
+                item["num_directions"] = int(ref.get("num_directions", candidate.get("num_directions", 1)) or 0)
+            if isinstance(candidate.get("thumbnail_camera"), dict):
+                item["thumbnail_camera"] = candidate.get("thumbnail_camera")
+        output.append(item)
+    return output
+
+
+def _orient_predict(image_ref: str, do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, timeout: float) -> dict[str, Any]:
+    return clip_request_json(
+        "/orient/predict",
+        {
+            "image_ref": image_ref,
+            "do_rm_bkg_ref": bool(do_rm_bkg_ref),
+            "do_rm_bkg_tgt": bool(do_rm_bkg_tgt),
+        },
+        timeout=timeout,
+    )
+
+
+def _orient_preprocess(image_ref: str, timeout: float) -> dict[str, Any]:
+    return clip_request_json(
+        "/orient/preprocess",
+        {"image": image_ref},
+        timeout=timeout,
+    )
+
+
+def _relative_pose_from_absolute(crop_pose: dict[str, Any], thumb_pose: dict[str, Any]) -> dict[str, float]:
+    crop_matrix = _pose_matrix(crop_pose)
+    thumb_matrix = _pose_matrix(thumb_pose)
+    rel = _mat_mul(crop_matrix, _mat_transpose(thumb_matrix))
+    return _matrix_to_pose(rel)
+
+
+def _pose_axes(pose: dict[str, Any]) -> dict[str, list[float]]:
+    matrix = _pose_matrix(pose)
+    return {
+        "x": [matrix[0][0], matrix[1][0], matrix[2][0]],
+        "y": [matrix[0][1], matrix[1][1], matrix[2][1]],
+        "z": [matrix[0][2], matrix[1][2], matrix[2][2]],
+    }
+
+
+def _pose_matrix(pose: dict[str, Any]) -> list[list[float]]:
+    az = math.radians(float(pose.get("azimuth", 0.0)))
+    el = math.radians(float(pose.get("polar", pose.get("elevation", 0.0))))
+    ro = math.radians(float(pose.get("rotation", 0.0)))
+    return _mat_mul(_rot_x(ro), _mat_mul(_rot_y(el), _rot_z(-az)))
+
+
+def _matrix_to_pose(matrix: list[list[float]]) -> dict[str, float]:
+    # Inverse of R = Rx(rot) * Ry(polar) * Rz(-azimuth), matching Orient-Anything utils.
+    sin_el = max(-1.0, min(1.0, matrix[0][2]))
+    el = math.asin(sin_el)
+    cos_el = math.cos(el)
+    if abs(cos_el) > 1.0e-6:
+        ro = math.atan2(-matrix[1][2], matrix[2][2])
+        az = math.atan2(-matrix[0][1], matrix[0][0])
+    else:
+        ro = 0.0
+        az = math.atan2(matrix[1][0], matrix[1][1])
+    return {
+        "azimuth": math.degrees(az),
+        "polar": math.degrees(el),
+        "rotation": math.degrees(ro),
+    }
+
+
+def _rot_x(angle: float) -> list[list[float]]:
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
+
+
+def _rot_y(angle: float) -> list[list[float]]:
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+
+
+def _rot_z(angle: float) -> list[list[float]]:
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _mat_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    return [[sum(a[row][k] * b[k][col] for k in range(3)) for col in range(3)] for row in range(3)]
+
+
+def _mat_transpose(matrix: list[list[float]]) -> list[list[float]]:
+    return [[matrix[col][row] for col in range(3)] for row in range(3)]
 
 
 def _base_random_seed(params: dict[str, Any]) -> int | None:

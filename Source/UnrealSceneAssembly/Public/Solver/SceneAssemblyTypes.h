@@ -17,6 +17,14 @@ enum class ESceneAssemblyScoreCombineMode : uint8
 	Multiplicative UMETA(DisplayName = "Multiplicative"),
 };
 
+UENUM(BlueprintType)
+enum class ESceneAssemblyOrientMode : uint8
+{
+	Legacy UMETA(DisplayName = "Legacy"),
+	Precomputed UMETA(DisplayName = "Precomputed"),
+	DualImage UMETA(DisplayName = "Dual Image"),
+};
+
 USTRUCT(BlueprintType)
 struct UNREALSCENEASSEMBLY_API FSceneOBB
 {
@@ -53,6 +61,33 @@ struct UNREALSCENEASSEMBLY_API FAssetCandidate
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	float SemanticScore = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	bool bHasOrientation = false;
+
+	// Model-space relative rotation from concept crop to this asset thumbnail.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FRotator RelativeOrientation = FRotator::ZeroRotator;
+
+	// Preferred representation: model-space basis axes of RelativeOrientation.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector RelativeOrientationX = FVector::ForwardVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector RelativeOrientationY = FVector::RightVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector RelativeOrientationZ = FVector::UpVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	int32 NumDirections = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	bool bHasThumbnailCamera = false;
+
+	// Per-asset thumbnail camera orientation in asset-local space T_t.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
 };
 
 USTRUCT(BlueprintType)
@@ -65,6 +100,21 @@ struct UNREALSCENEASSEMBLY_API FSolverSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	ESceneAssemblyScoreCombineMode CombineMode = ESceneAssemblyScoreCombineMode::Multiplicative;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	ESceneAssemblyOrientMode OrientMode = ESceneAssemblyOrientMode::Legacy;
+
+	// Captured concept camera world rotation C_c.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FRotator ConceptCameraRotation = FRotator::ZeroRotator;
+
+	// Model camera convention to Unreal convention calibration B.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FRotator OrientBasisRotation = FRotator::ZeroRotator;
+
+	// Thumbnail camera orientation in asset-local space T_t.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver", meta = (ClampMin = "0.0"))
 	float WeightSemantic = 1.0f;

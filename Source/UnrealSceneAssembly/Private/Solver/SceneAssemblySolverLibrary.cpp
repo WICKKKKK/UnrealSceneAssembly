@@ -71,6 +71,25 @@ double GetAxisComponent(const FVector& Value, int32 AxisIndex)
 	}
 }
 
+FQuat QuatFromAxes(const FVector& AxisX, const FVector& AxisY, const FVector& AxisZ)
+{
+	FMatrix Matrix = FMatrix::Identity;
+	Matrix.SetAxis(0, AxisX);
+	Matrix.SetAxis(1, AxisY);
+	Matrix.SetAxis(2, AxisZ);
+	FQuat Quat(Matrix);
+	if (!Quat.IsNormalized())
+	{
+		Quat.Normalize();
+	}
+	return Quat;
+}
+
+FVector SafeNormalOr(const FVector& Value, const FVector& Fallback)
+{
+	return Value.GetSafeNormal(UE_SMALL_NUMBER, Fallback);
+}
+
 UBoxComponent* FindPreferredBoxComponent(AActor* Actor)
 {
 	if (!Actor)
@@ -198,6 +217,107 @@ bool RedirectSceneFrameToWorldBottom(
 		&& IsFiniteVector(OutRedirectedFrame.BottomCenter);
 }
 
+bool ResolveOrientedSceneFrame(
+	const FVector& SceneLocalCenter,
+	const FVector& SceneHalfExtents,
+	const FTransform& SceneFrame,
+	const FAssetCandidate& Candidate,
+	const FSolverSettings& Settings,
+	FRedirectedSceneFrame& OutRedirectedFrame)
+{
+	if (!Candidate.bHasOrientation)
+	{
+		return false;
+	}
+
+	const FVector SceneCenter = SceneFrame.TransformPosition(SceneLocalCenter);
+	const FVector SceneAxes[3] =
+	{
+		SceneFrame.GetUnitAxis(EAxis::X),
+		SceneFrame.GetUnitAxis(EAxis::Y),
+		SceneFrame.GetUnitAxis(EAxis::Z),
+	};
+
+	FQuat RelativeRotation = QuatFromAxes(
+		SafeNormalOr(Candidate.RelativeOrientationX, FVector::ForwardVector),
+		SafeNormalOr(Candidate.RelativeOrientationY, FVector::RightVector),
+		SafeNormalOr(Candidate.RelativeOrientationZ, FVector::UpVector));
+	if (RelativeRotation.ContainsNaN())
+	{
+		RelativeRotation = Candidate.RelativeOrientation.Quaternion();
+	}
+
+	const FQuat ConceptCamera = Settings.ConceptCameraRotation.Quaternion();
+	const FQuat Basis = Settings.OrientBasisRotation.Quaternion();
+	const FQuat ThumbnailCamera = (Candidate.bHasThumbnailCamera ? Candidate.ThumbnailCameraRotation : Settings.ThumbnailCameraRotation).Quaternion();
+	const FQuat BasisInverse = Basis.Inverse();
+	const FQuat TargetRotation = (ConceptCamera * BasisInverse * RelativeRotation * Basis * ThumbnailCamera.Inverse()).GetNormalized();
+
+	static const int32 Permutations[6][3] =
+	{
+		{0, 1, 2},
+		{0, 2, 1},
+		{1, 0, 2},
+		{1, 2, 0},
+		{2, 0, 1},
+		{2, 1, 0},
+	};
+	static const int32 Signs[2] = { -1, 1 };
+
+	double BestDistance = UE_DOUBLE_BIG_NUMBER;
+	FQuat BestRotation = FQuat::Identity;
+	FVector BestHalfExtents = FVector::ZeroVector;
+	FVector BestZAxis = FVector::UpVector;
+
+	for (int32 PermutationIndex = 0; PermutationIndex < 6; ++PermutationIndex)
+	{
+		const int32* Permutation = Permutations[PermutationIndex];
+		for (int32 SignXIndex = 0; SignXIndex < 2; ++SignXIndex)
+		{
+			const int32 SignX = Signs[SignXIndex];
+			for (int32 SignYIndex = 0; SignYIndex < 2; ++SignYIndex)
+			{
+				const int32 SignY = Signs[SignYIndex];
+				for (int32 SignZIndex = 0; SignZIndex < 2; ++SignZIndex)
+				{
+					const int32 SignZ = Signs[SignZIndex];
+					const FVector CandidateX = SceneAxes[Permutation[0]] * static_cast<double>(SignX);
+					const FVector CandidateY = SceneAxes[Permutation[1]] * static_cast<double>(SignY);
+					const FVector CandidateZ = SceneAxes[Permutation[2]] * static_cast<double>(SignZ);
+					if (FVector::DotProduct(FVector::CrossProduct(CandidateX, CandidateY), CandidateZ) <= 0.0)
+					{
+						continue;
+					}
+
+					FQuat CandidateRotation = QuatFromAxes(CandidateX, CandidateY, CandidateZ);
+					const double Distance = TargetRotation.AngularDistance(CandidateRotation);
+					if (Distance < BestDistance)
+					{
+						BestDistance = Distance;
+						BestRotation = CandidateRotation;
+						BestHalfExtents = FVector(
+							GetAxisComponent(SceneHalfExtents, Permutation[0]),
+							GetAxisComponent(SceneHalfExtents, Permutation[1]),
+							GetAxisComponent(SceneHalfExtents, Permutation[2]));
+						BestZAxis = CandidateZ;
+					}
+				}
+			}
+		}
+	}
+
+	OutRedirectedFrame.HalfExtents = BestHalfExtents;
+	OutRedirectedFrame.Rotation = BestRotation;
+	OutRedirectedFrame.BottomCenter = SceneCenter - BestZAxis * BestHalfExtents.Z;
+
+	return BestDistance < UE_DOUBLE_BIG_NUMBER
+		&& HasUsableExtents(OutRedirectedFrame.HalfExtents)
+		&& IsFiniteVector(SceneCenter)
+		&& IsFiniteVector(BestZAxis)
+		&& !OutRedirectedFrame.Rotation.ContainsNaN()
+		&& IsFiniteVector(OutRedirectedFrame.BottomCenter);
+}
+
 float ComputeAlignedIoU(const FVector& SceneHalfExtents, const FVector& AssetHalfExtents, double ScaleFactor)
 {
 	const FVector ScaledAssetHalf = AssetHalfExtents * ScaleFactor;
@@ -245,7 +365,20 @@ bool BuildPendingPlacement(
 	}
 
 	FRedirectedSceneFrame RedirectedSceneFrame;
-	if (!RedirectSceneFrameToWorldBottom(SceneLocalCenter, SceneHalfExtents, SceneFrame, RedirectedSceneFrame))
+	const bool bUseImageOrientation = Settings.OrientMode != ESceneAssemblyOrientMode::Legacy;
+	bool bUsedImageOrientation = false;
+	bool bHasRedirectedSceneFrame = false;
+	if (bUseImageOrientation && Candidate.bHasOrientation)
+	{
+		bHasRedirectedSceneFrame = ResolveOrientedSceneFrame(SceneLocalCenter, SceneHalfExtents, SceneFrame, Candidate, Settings, RedirectedSceneFrame);
+		bUsedImageOrientation = bHasRedirectedSceneFrame;
+	}
+	if (!bHasRedirectedSceneFrame)
+	{
+		bHasRedirectedSceneFrame = RedirectSceneFrameToWorldBottom(SceneLocalCenter, SceneHalfExtents, SceneFrame, RedirectedSceneFrame);
+		bUsedImageOrientation = false;
+	}
+	if (!bHasRedirectedSceneFrame)
 	{
 		return false;
 	}
@@ -258,7 +391,7 @@ bool BuildPendingPlacement(
 
 	const int32 SceneRatioSign = SignLogRatio(RedirectedSceneFrame.HalfExtents.X, RedirectedSceneFrame.HalfExtents.Y);
 	const int32 AssetRatioSign = SignLogRatio(AssetHalfExtents.X, AssetHalfExtents.Y);
-	const bool bSwapHorizontalAxes = (SceneRatioSign * AssetRatioSign) < 0;
+	const bool bSwapHorizontalAxes = !bUsedImageOrientation && (SceneRatioSign * AssetRatioSign) < 0;
 	const FVector AlignedAssetHalfExtents = bSwapHorizontalAxes
 		? FVector(AssetHalfExtents.Y, AssetHalfExtents.X, AssetHalfExtents.Z)
 		: AssetHalfExtents;
@@ -504,19 +637,44 @@ bool USceneAssemblySolverLibrary::RunSolverSelfTest(float& OutFitIoU, FString& O
 		&& FVector::DotProduct(TippedActorUpAxis, ExpectedTippedFrame.Rotation.GetAxisZ()) >= 0.999f
 		&& FVector::Dist(TippedPlacedBottomCenter, ExpectedTippedFrame.BottomCenter) <= 1.0e-3f;
 
+	FSceneOBB OrientedSceneOBB;
+	OrientedSceneOBB.LocalCenter = FVector::ZeroVector;
+	OrientedSceneOBB.HalfExtents = FVector(100.0, 50.0, 25.0);
+	OrientedSceneOBB.WorldTransform = FTransform(FQuat::Identity, FVector::ZeroVector, FVector::OneVector);
+
+	FAssetCandidate OrientedCandidate;
+	OrientedCandidate.AssetPath = TEXT("/SceneAssembly/SelfTestOrientedAsset");
+	OrientedCandidate.BboxCenter = FVector::ZeroVector;
+	OrientedCandidate.BboxHalfExtents = FVector(10.0, 2.5, 5.0);
+	OrientedCandidate.SemanticScore = 1.0f;
+	OrientedCandidate.bHasOrientation = true;
+	OrientedCandidate.RelativeOrientationX = FVector::ForwardVector;
+	OrientedCandidate.RelativeOrientationY = FVector::UpVector;
+	OrientedCandidate.RelativeOrientationZ = -FVector::RightVector;
+
+	FSolverSettings OrientedSettings = Settings;
+	OrientedSettings.OrientMode = ESceneAssemblyOrientMode::Precomputed;
+	TArray<FAssetCandidate> OrientedCandidates;
+	OrientedCandidates.Add(OrientedCandidate);
+	const TArray<FPlacementResult> OrientedResults = SolvePlacement(OrientedSceneOBB, OrientedCandidates, OrientedSettings);
+	const bool bOrientedPass = !OrientedResults.IsEmpty()
+		&& FVector::DotProduct(OrientedResults[0].Transform.GetUnitAxis(EAxis::Z), -FVector::RightVector) >= 0.999f;
+
 	OutFitIoU = FMath::Min(Results[0].FitIoU, TippedResults[0].FitIoU);
 	const bool bPass = OutFitIoU >= 0.999f
 		&& FMath::IsNearlyEqual(Results[0].ScaleFactor, 10.0f, 1.0e-3f)
-		&& bTippedPass;
+		&& bTippedPass
+		&& bOrientedPass;
 	OutMessage = bPass
 		? TEXT("Solver self-test passed.")
 		: FString::Printf(
-			TEXT("Solver self-test failed: UprightIoU=%.6f UprightScale=%.6f TippedIoU=%.6f TippedScale=%.6f TippedUpDot=%.6f TippedBottomError=%.6f"),
+			TEXT("Solver self-test failed: UprightIoU=%.6f UprightScale=%.6f TippedIoU=%.6f TippedScale=%.6f TippedUpDot=%.6f TippedBottomError=%.6f OrientedPass=%d"),
 			Results[0].FitIoU,
 			Results[0].ScaleFactor,
 			TippedResults[0].FitIoU,
 			TippedResults[0].ScaleFactor,
 			bHasExpectedTippedFrame ? FVector::DotProduct(TippedActorUpAxis, ExpectedTippedFrame.Rotation.GetAxisZ()) : 0.0,
-			bHasExpectedTippedFrame ? FVector::Dist(TippedPlacedBottomCenter, ExpectedTippedFrame.BottomCenter) : 0.0);
+			bHasExpectedTippedFrame ? FVector::Dist(TippedPlacedBottomCenter, ExpectedTippedFrame.BottomCenter) : 0.0,
+			bOrientedPass ? 1 : 0);
 	return bPass;
 }

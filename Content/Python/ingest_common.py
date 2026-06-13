@@ -6,13 +6,14 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import uuid
 
 import unreal
 
 import config
 
 
-RESERVED_OUTPUT_FIELDS = ["thumbnail_url", "asset_name", "asset_path", "asset_type", "public_path"]
+RESERVED_OUTPUT_FIELDS = ["thumbnail_url", "asset_name", "asset_path", "asset_type", "orient_thumbnail_url", "thumbnail_camera"]
 
 
 class ApiError(RuntimeError):
@@ -33,6 +34,13 @@ def _headers():
         "Authorization": "Bearer {0}".format(config.API_KEY),
         "Content-Type": "application/json",
         "Accept": "application/json",
+    }
+
+
+def _auth_headers(accept="application/json"):
+    return {
+        "Authorization": "Bearer {0}".format(config.API_KEY),
+        "Accept": accept,
     }
 
 
@@ -87,6 +95,120 @@ def request_json(method, path, payload=None, timeout=None, allow_404=False):
                 time.sleep(delay)
                 continue
             raise RuntimeError("{0} {1} failed: {2}".format(method, url, exc))
+
+
+def _public_url(relative_path):
+    normalized = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not normalized:
+        return ""
+    return "/public/{0}".format(normalized)
+
+
+def absolute_public_url(url_or_path):
+    value = str(url_or_path or "").strip()
+    if not value:
+        return ""
+    lower = value.lower()
+    if lower.startswith("http://") or lower.startswith("https://") or lower.startswith("data:"):
+        return value
+    return "{0}/{1}".format(config.BASE_URL.rstrip("/"), value.lstrip("/"))
+
+
+def _multipart_upload_body(file_paths, target_dir, conflict_strategy):
+    boundary = "----SceneAssemblyBoundary{0}".format(uuid.uuid4().hex)
+    chunks = []
+
+    def add_form_field(name, value):
+        chunks.append("--{0}\r\n".format(boundary).encode("ascii"))
+        chunks.append('Content-Disposition: form-data; name="{0}"\r\n\r\n'.format(name).encode("ascii"))
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+
+    add_form_field("target_dir", target_dir)
+    add_form_field("conflict_strategy", conflict_strategy)
+    for file_path in file_paths:
+        filename = os.path.basename(file_path)
+        chunks.append("--{0}\r\n".format(boundary).encode("ascii"))
+        chunks.append(
+            'Content-Disposition: form-data; name="files"; filename="{0}"\r\n'.format(filename).encode("utf-8")
+        )
+        chunks.append(b"Content-Type: image/png\r\n\r\n")
+        with open(file_path, "rb") as image_file:
+            chunks.append(image_file.read())
+        chunks.append(b"\r\n")
+    chunks.append("--{0}--\r\n".format(boundary).encode("ascii"))
+    return boundary, b"".join(chunks)
+
+
+def upload_files_batch(file_paths, target_dir=None, conflict_strategy="overwrite", timeout=None):
+    paths = [path for path in file_paths if path]
+    if not paths:
+        return {}
+    missing = [path for path in paths if not os.path.isfile(path)]
+    if missing:
+        raise RuntimeError("Upload files missing: {0}".format(", ".join(missing)))
+
+    boundary, body = _multipart_upload_body(
+        paths,
+        target_dir if target_dir is not None else config.THUMB_REL,
+        conflict_strategy,
+    )
+    headers = _auth_headers()
+    headers["Content-Type"] = "multipart/form-data; boundary={0}".format(boundary)
+    request = urllib.request.Request(
+        _api_url("/files/upload/batch"),
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or config.HTTP_TIMEOUT_SECONDS) as response:
+            envelope = _decode_json(response.read())
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace")
+        raise ApiError("POST", _api_url("/files/upload/batch"), exc.code, response_body)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError("POST {0} failed: {1}".format(_api_url("/files/upload/batch"), exc))
+
+    data = unwrap_data(envelope)
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        raise RuntimeError("Unexpected upload batch response: {0}".format(data))
+
+    output = {}
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        filename = result.get("filename")
+        relative_path = result.get("relative_path")
+        if filename and relative_path:
+            output[str(filename)] = str(relative_path).replace("\\", "/").lstrip("/")
+    expected = {os.path.basename(path) for path in paths}
+    missing_results = sorted(filename for filename in expected if filename not in output)
+    if missing_results:
+        raise RuntimeError("Upload batch response missing files: {0}".format(", ".join(missing_results)))
+    return output
+
+
+def apply_uploaded_thumbnail_urls(items, upload_results):
+    for item in items:
+        filename = os.path.basename(item["out_path"])
+        relative_path = upload_results.get(filename)
+        if not relative_path:
+            raise RuntimeError("Upload response missing thumbnail: {0}".format(filename))
+        item["thumbnail_url"] = _public_url(relative_path)
+
+
+def apply_uploaded_orient_urls(items, upload_results):
+    for item in items:
+        orient_out_path = item.get("orient_out_path")
+        if not orient_out_path:
+            continue
+        filename = os.path.basename(orient_out_path)
+        relative_path = upload_results.get(filename)
+        if not relative_path:
+            raise RuntimeError("Upload response missing orient thumbnail: {0}".format(filename))
+        item["orient_thumbnail_url"] = _public_url(relative_path)
 
 
 def unwrap_data(envelope):
@@ -171,24 +293,81 @@ def soft_object_path_string(asset_data):
     return "{0}.{1}".format(package_name, asset_name)
 
 
+def asset_path_no_suffix(path):
+    value = str(path or "").strip()
+    if not value or value == "None":
+        return ""
+    slash_index = value.rfind("/")
+    dot_index = value.find(".", slash_index + 1)
+    if dot_index < 0:
+        return value
+    return value[:dot_index]
+
+
+def object_path_from_asset_path(asset_path):
+    value = str(asset_path or "").strip()
+    if not value or value == "None":
+        return ""
+    slash_index = value.rfind("/")
+    if value.find(".", slash_index + 1) >= 0:
+        return value
+    asset_name = value[slash_index + 1 :] if slash_index >= 0 else value
+    return "{0}.{1}".format(value, asset_name) if asset_name else value
+
+
 def asset_identity(asset_data):
-    asset_path = soft_object_path_string(asset_data)
+    object_path = soft_object_path_string(asset_data)
+    asset_path = asset_path_no_suffix(object_path)
     asset_name = str(asset_data.asset_name)
     asset_id = hashlib.md5(asset_path.encode("utf-8")).hexdigest()
-    return asset_id, asset_name, asset_path
+    return asset_id, asset_name, asset_path, object_path
 
 
 def thumbnail_paths(asset_id):
     filename = "{0}.png".format(asset_id)
     out_path = os.path.join(config.THUMB_DIR, filename)
-    public_path = "{0}/{1}".format(config.THUMB_REL.strip("/"), filename)
-    thumbnail_url = "{0}/{1}".format(config.THUMB_URL_PREFIX.rstrip("/"), filename)
-    return out_path, public_path, thumbnail_url
+    relative_path = "{0}/{1}".format(config.THUMB_REL.strip("/"), filename)
+    thumbnail_url = _public_url(relative_path)
+    return out_path, thumbnail_url
+
+
+def orient_thumbnail_paths(asset_id):
+    suffix = str(getattr(config, "ORIENT_THUMB_SUFFIX", "_orient") or "_orient")
+    filename = "{0}{1}.png".format(asset_id, suffix)
+    out_path = os.path.join(config.THUMB_DIR, filename)
+    relative_path = "{0}/{1}".format(config.THUMB_REL.strip("/"), filename)
+    thumbnail_url = _public_url(relative_path)
+    return out_path, thumbnail_url
 
 
 def export_thumbnail(asset_path, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    return unreal.ThumbnailLibrary.export_asset_thumbnail(asset_path, out_path, config.THUMB_RESOLUTION)
+    return unreal.ThumbnailLibrary.export_asset_thumbnail(asset_path, out_path, config.THUMB_RESOLUTION, _thumbnail_background_color())
+
+
+def export_thumbnail_with_camera(asset_path, out_path):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    result = unreal.ThumbnailLibrary.export_asset_thumbnail_with_camera(asset_path, out_path, config.THUMB_RESOLUTION, _thumbnail_background_color())
+    succeeded = bool(result.get_editor_property("success"))
+    camera = _rotator_dict(result.get_editor_property("camera_rotation")) if succeeded else None
+    unreal.log(
+        "[SceneAssembly] Thumbnail camera export: {0} succeeded={1} camera={2}".format(
+            asset_path,
+            succeeded,
+            camera,
+        )
+    )
+    return succeeded, camera
+
+
+def _thumbnail_background_color():
+    color = getattr(config, "THUMB_BG_COLOR", (0.5, 0.5, 0.5))
+    if isinstance(color, str):
+        parts = [part.strip() for part in color.split(",")]
+    else:
+        parts = list(color)
+    values = [float(parts[index]) if index < len(parts) else 0.5 for index in range(3)]
+    return unreal.LinearColor(values[0], values[1], values[2], 1.0)
 
 
 def encode_thumbnail_base64(thumbnail_path):
@@ -210,6 +389,27 @@ def _vector_xyz(vector):
         "X": _component(vector, "x", 0),
         "Y": _component(vector, "y", 1),
         "Z": _component(vector, "z", 2),
+    }
+
+
+def _rotator_component(rotator, name):
+    if rotator is None:
+        return 0.0
+    if hasattr(rotator, name):
+        return float(getattr(rotator, name))
+    title_name = name[:1].upper() + name[1:]
+    if hasattr(rotator, title_name):
+        return float(getattr(rotator, title_name))
+    return 0.0
+
+
+def _rotator_dict(rotator):
+    if rotator is None:
+        return None
+    return {
+        "pitch": _rotator_component(rotator, "pitch"),
+        "yaw": _rotator_component(rotator, "yaw"),
+        "roll": _rotator_component(rotator, "roll"),
     }
 
 
@@ -281,7 +481,7 @@ def ingest_batch(collection_name, rows):
         "POST",
         "/milvus/collections/{0}/assets".format(collection_name),
         {"assets": rows},
-        timeout=getattr(config, "INGEST_TIMEOUT_SECONDS", config.HTTP_TIMEOUT_SECONDS),
+        timeout=config.HTTP_TIMEOUT_SECONDS,
     )
     data = unwrap_data(envelope)
     if isinstance(data, dict):

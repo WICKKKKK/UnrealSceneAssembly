@@ -156,7 +156,7 @@ def _chat_completion_text(messages):
         "POST",
         "/chat/completions",
         payload,
-        timeout=getattr(config, "TAGGING_TIMEOUT_SECONDS", config.HTTP_TIMEOUT_SECONDS),
+        timeout=config.HTTP_TIMEOUT_SECONDS,
     )
     if not isinstance(response, dict):
         raise RuntimeError("Unexpected chat completion response: {0}".format(response))

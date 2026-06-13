@@ -233,12 +233,29 @@ def _candidate_structs(values: Any) -> list[Any]:
 
         bbox_center, bbox_half_extents = _candidate_bbox(value, index)
         semantic_score = _first_present(value, "semantic_score", "SemanticScore", "score", default=1.0)
+        relative_orientation = _first_present(value, "relative_orientation", "RelativeOrientation", "rel", "relative_pose")
+        relative_axes = _first_present(value, "relative_orientation_axes", "RelativeOrientationAxes", "relative_axes")
+        num_directions = _first_present(value, "num_directions", "NumDirections", default=1)
+        thumbnail_camera = _first_present(value, "thumbnail_camera", "thumbnail_camera_rotation", "ThumbnailCamera", "ThumbnailCameraRotation")
 
         candidate = unreal.AssetCandidate()
         _set_struct_property(candidate, "asset_path", str(asset_path))
         _set_struct_property(candidate, "bbox_center", bbox_center)
         _set_struct_property(candidate, "bbox_half_extents", bbox_half_extents)
         _set_struct_property(candidate, "semantic_score", float(semantic_score))
+        if relative_orientation is not None:
+            _set_struct_property(candidate, "b_has_orientation", True)
+            _set_struct_property(candidate, "relative_orientation", _to_rotator(relative_orientation))
+            _set_struct_property(candidate, "num_directions", int(num_directions or 0))
+        if isinstance(relative_axes, dict):
+            _set_struct_property(candidate, "b_has_orientation", True)
+            _set_struct_property(candidate, "relative_orientation_x", _vector_from_value(_first_present(relative_axes, "x", "X"), unreal.Vector(1.0, 0.0, 0.0)))
+            _set_struct_property(candidate, "relative_orientation_y", _vector_from_value(_first_present(relative_axes, "y", "Y"), unreal.Vector(0.0, 1.0, 0.0)))
+            _set_struct_property(candidate, "relative_orientation_z", _vector_from_value(_first_present(relative_axes, "z", "Z"), unreal.Vector(0.0, 0.0, 1.0)))
+            _set_struct_property(candidate, "num_directions", int(num_directions or 0))
+        if thumbnail_camera is not None:
+            _set_struct_property(candidate, "b_has_thumbnail_camera", True)
+            _set_struct_property(candidate, "thumbnail_camera_rotation", _to_rotator(thumbnail_camera))
         candidates.append(candidate)
     return candidates
 
@@ -279,6 +296,14 @@ def _settings_struct(value: Any) -> Any:
         _set_struct_property(settings, "scale_mode", _scale_mode_value(_first_present(value, "scale_mode", "ScaleMode")))
     if "combine_mode" in value or "CombineMode" in value:
         _set_struct_property(settings, "combine_mode", _combine_mode_value(_first_present(value, "combine_mode", "CombineMode")))
+    if "orient_mode" in value or "OrientMode" in value:
+        _set_struct_property(settings, "orient_mode", _orient_mode_value(_first_present(value, "orient_mode", "OrientMode")))
+    if "concept_camera_rotation" in value or "ConceptCameraRotation" in value:
+        _set_struct_property(settings, "concept_camera_rotation", _to_rotator(_first_present(value, "concept_camera_rotation", "ConceptCameraRotation")))
+    if "orient_basis_rotation" in value or "OrientBasisRotation" in value:
+        _set_struct_property(settings, "orient_basis_rotation", _to_rotator(_first_present(value, "orient_basis_rotation", "OrientBasisRotation")))
+    if "thumbnail_camera_rotation" in value or "ThumbnailCameraRotation" in value:
+        _set_struct_property(settings, "thumbnail_camera_rotation", _to_rotator(_first_present(value, "thumbnail_camera_rotation", "ThumbnailCameraRotation")))
 
     _set_float_setting(settings, value, "weight_semantic", "WeightSemantic")
     _set_float_setting(settings, value, "weight_geometry", "WeightGeometry")
@@ -331,6 +356,10 @@ def _scale_mode_value(value: Any) -> Any:
 
 def _combine_mode_value(value: Any) -> Any:
     return _enum_value(("SceneAssemblyScoreCombineMode", "ESceneAssemblyScoreCombineMode"), value, ("multiplicative", "multiply", "mul"))
+
+
+def _orient_mode_value(value: Any) -> Any:
+    return _enum_value(("SceneAssemblyOrientMode", "ESceneAssemblyOrientMode"), value, ("legacy",))
 
 
 def _enum_value(type_names: tuple[str, ...], requested: Any, default_names: tuple[str, ...]) -> Any:

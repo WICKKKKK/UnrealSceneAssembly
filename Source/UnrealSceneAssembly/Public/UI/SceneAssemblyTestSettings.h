@@ -46,6 +46,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "组合模式", ToolTip = "Multiplicative 为非补偿式组合；Additive 为加权相加。"))
 	ESceneAssemblyScoreCombineMode CombineMode = ESceneAssemblyScoreCombineMode::Multiplicative;
 
+	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "朝向模式", ToolTip = "Precomputed 使用离线缩略图朝向；Dual Image 使用双图相对朝向；Legacy 使用旧的白盒竖直轴逻辑。"))
+	ESceneAssemblyOrientMode OrientMode = ESceneAssemblyOrientMode::Precomputed;
+
+	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "Orient Basis(B)", ToolTip = "模型相机约定到 UE 坐标约定的标定旋转。"))
+	FRotator OrientBasisRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "Fallback Thumbnail Camera(T_t)", ToolTip = "候选资产未提供 thumbnail_camera 时使用的回退缩略图相机旋转。"))
+	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
+
 	UPROPERTY(EditAnywhere, Category = "求解器", meta = (DisplayName = "语义权重", ToolTip = "语义分数权重。Multiplicative 模式下作为指数。", ClampMin = "0.0", UIMin = "0.0"))
 	float WeightSemantic = 1.0f;
 
