@@ -2,12 +2,16 @@
 
 #include "AssetCompilingManager.h"
 #include "Animation/SkeletalMeshActor.h"
+#include "CanvasTypes.h"
 #include "Components/DirectionalLightComponent.h"
-#include "Components/SceneCaptureComponent2D.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "ContentStreaming.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#include "EngineModule.h"
+#include "GameTime.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkinnedAsset.h"
 #include "Engine/StaticMesh.h"
@@ -19,10 +23,10 @@
 #include "HAL/UnrealMemory.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
+#include "LegacyScreenPercentageDriver.h"
 #include "Math/PerspectiveMatrix.h"
 #include "Math/RotationMatrix.h"
 #include "Math/UnrealMathUtility.h"
-#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
 #include "Misc/FileHelper.h"
@@ -34,6 +38,10 @@
 #include "RenderingThread.h"
 #include "RHI.h"
 #include "RHIFeatureLevel.h"
+#include "SceneInterface.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
+#include "SceneViewExtensionContext.h"
 #include "ShaderCompiler.h"
 #include "SkinnedAssetCompiler.h"
 #include "StaticMeshCompiler.h"
@@ -49,12 +57,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogSceneAssemblyThumbnail, Log, All);
 #if WITH_EDITOR
 namespace
 {
-constexpr float SceneCaptureThumbnailFovDegrees = 30.0f;
-constexpr float SceneCaptureTextureForceResidentSeconds = 30.0f;
-constexpr int32 SceneCaptureWarmUpFrames = 8;
-const TCHAR* ThumbnailBackdropMaterialPath = TEXT("/UnrealSceneAssembly/SceneCapture/M_SceneCaptureID.M_SceneCaptureID");
-const TCHAR* ThumbnailBackdropColorParameter = TEXT("IDColor");
-const TCHAR* ThumbnailBackdropSpherePath = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+constexpr float ThumbnailDefaultFovDegrees = 30.0f;
+constexpr float ThumbnailMinCameraDistance = 48.0f;
+constexpr float ThumbnailTextureForceResidentSeconds = 30.0f;
 
 FQuat ThumbnailCameraRotationFromOrbit(float OrbitPitch, float OrbitYaw)
 {
@@ -111,6 +116,33 @@ bool ResolveThumbnailCameraRotation(UObject* Asset, FRotator& OutCameraRotation)
 	return true;
 }
 
+FThumbnailCaptureOptions NormalizeCaptureOptions(const FThumbnailCaptureOptions& CaptureOptions, int32 Resolution)
+{
+	FThumbnailCaptureOptions NormalizedOptions = CaptureOptions;
+	NormalizedOptions.Resolution = CaptureOptions.Resolution > 0 ? CaptureOptions.Resolution : Resolution;
+	NormalizedOptions.Resolution = FMath::Clamp(NormalizedOptions.Resolution, 64, 2048);
+	NormalizedOptions.FovDegrees = CaptureOptions.FovDegrees > 0.0f
+		? FMath::Clamp(CaptureOptions.FovDegrees, 1.0f, 170.0f)
+		: ThumbnailDefaultFovDegrees;
+	return NormalizedOptions;
+}
+
+void ResolveThumbnailOrbit(UObject* MeshAsset, const FThumbnailCaptureOptions& CaptureOptions, float& OutOrbitPitch, float& OutOrbitYaw, float& OutOrbitZoom)
+{
+	if (CaptureOptions.bOverrideCamera)
+	{
+		OutOrbitPitch = CaptureOptions.OrbitPitch;
+		OutOrbitYaw = CaptureOptions.OrbitYaw;
+		OutOrbitZoom = CaptureOptions.OrbitZoom;
+		return;
+	}
+
+	const USceneThumbnailInfo* ThumbnailInfo = SceneThumbnailInfoOrDefault(MeshAsset);
+	OutOrbitPitch = ThumbnailInfo ? ThumbnailInfo->OrbitPitch : 0.0f;
+	OutOrbitYaw = ThumbnailInfo ? ThumbnailInfo->OrbitYaw : 0.0f;
+	OutOrbitZoom = ThumbnailInfo ? ThumbnailInfo->OrbitZoom : 0.0f;
+}
+
 float ThumbnailBoundsZOffset(const FBoxSphereBounds& Bounds)
 {
 	return static_cast<float>(Bounds.BoxExtent.Z + 1.0);
@@ -121,16 +153,16 @@ bool ComputeThumbnailCameraView(
 	const FBoxSphereBounds& Bounds,
 	FVector& OutLocation,
 	FRotator& OutRotation,
-	float& OutFovDegrees)
+	float& OutFovDegrees,
+	const FThumbnailCaptureOptions& CaptureOptions)
 {
-	const USceneThumbnailInfo* ThumbnailInfo = SceneThumbnailInfoOrDefault(MeshAsset);
-	if (!ThumbnailInfo)
+	OutFovDegrees = CaptureOptions.FovDegrees;
+	const float HalfFovRadians = FMath::DegreesToRadians<float>(OutFovDegrees) * 0.5f;
+	if (HalfFovRadians <= 0.0f || FMath::IsNearlyZero(FMath::Tan(HalfFovRadians)))
 	{
 		return false;
 	}
 
-	OutFovDegrees = SceneCaptureThumbnailFovDegrees;
-	const float HalfFovRadians = FMath::DegreesToRadians<float>(OutFovDegrees) * 0.5f;
 	const bool bIsStaticMesh = MeshAsset->IsA<UStaticMesh>();
 	const float BoundsScale = bIsStaticMesh ? 1.15f : 1.0f;
 	const float HalfMeshSize = static_cast<float>(Bounds.SphereRadius * BoundsScale);
@@ -138,9 +170,11 @@ bool ComputeThumbnailCameraView(
 	const float BoundsZOffset = ThumbnailBoundsZOffset(Bounds);
 
 	FVector Origin(0.0f, 0.0f, -BoundsZOffset);
-	const float OrbitPitch = ThumbnailInfo->OrbitPitch;
-	const float OrbitYaw = ThumbnailInfo->OrbitYaw;
-	const float OrbitZoom = FMath::Max(48.0f, TargetDistance + ThumbnailInfo->OrbitZoom);
+	float OrbitPitch = 0.0f;
+	float OrbitYaw = 0.0f;
+	float OrbitZoomOffset = 0.0f;
+	ResolveThumbnailOrbit(MeshAsset, CaptureOptions, OrbitPitch, OrbitYaw, OrbitZoomOffset);
+	const float OrbitZoom = FMath::Max(ThumbnailMinCameraDistance, TargetDistance + OrbitZoomOffset);
 
 	const FRotator RotationOffsetToViewCenter(0.0f, 90.0f, 0.0f);
 	FMatrix ViewRotationMatrix = FRotationMatrix(FRotator(0.0f, OrbitYaw, 0.0f))
@@ -192,7 +226,7 @@ void ForceComponentTexturesResident(UMeshComponent* MeshComponent, TArray<UTextu
 		return;
 	}
 
-	MeshComponent->PrestreamTextures(SceneCaptureTextureForceResidentSeconds, false, 0);
+	MeshComponent->PrestreamTextures(ThumbnailTextureForceResidentSeconds, false, 0);
 	MeshComponent->SetTextureForceResidentFlag(true);
 
 	TArray<UTexture*> UsedTextures;
@@ -204,7 +238,7 @@ void ForceComponentTexturesResident(UMeshComponent* MeshComponent, TArray<UTextu
 			continue;
 		}
 
-		Texture->SetForceMipLevelsToBeResident(SceneCaptureTextureForceResidentSeconds);
+		Texture->SetForceMipLevelsToBeResident(ThumbnailTextureForceResidentSeconds);
 		Texture->WaitForStreaming();
 		ForcedTextures.Add(Texture);
 	}
@@ -294,10 +328,121 @@ UTextureRenderTarget2D* CreateThumbnailRenderTarget(int32 ThumbnailSize, const F
 	}
 
 	RenderTarget->ClearColor = BackgroundColor;
-	RenderTarget->TargetGamma = 2.2f;
-	RenderTarget->InitCustomFormat(ThumbnailSize, ThumbnailSize, PF_B8G8R8A8, false);
+	RenderTarget->TargetGamma = GEngine ? GEngine->DisplayGamma : 2.2f;
+	RenderTarget->RenderTargetFormat = RTF_RGBA8;
+	RenderTarget->InitAutoFormat(ThumbnailSize, ThumbnailSize);
 	RenderTarget->UpdateResourceImmediate(true);
 	return RenderTarget;
+}
+
+FSceneView* CreateThumbnailSceneView(
+	FSceneViewFamily* ViewFamily,
+	const FVector& CameraLocation,
+	const FRotator& CameraRotation,
+	float FovDegrees,
+	int32 ThumbnailSize,
+	const FLinearColor& BackgroundColor)
+{
+	if (!ViewFamily || ThumbnailSize <= 0)
+	{
+		return nullptr;
+	}
+
+	const FIntRect ViewRect(0, 0, ThumbnailSize, ThumbnailSize);
+	const float HalfFovRadians = FMath::DegreesToRadians<float>(FovDegrees) * 0.5f;
+	static_assert((int32)ERHIZBuffer::IsInverted != 0, "Check NearPlane and Projection Matrix");
+	constexpr float NearPlane = 1.0f;
+
+	FMatrix ViewRotationMatrix = FInverseRotationMatrix(CameraRotation);
+	ViewRotationMatrix = ViewRotationMatrix * FMatrix(
+		FPlane(0.0f, 0.0f, 1.0f, 0.0f),
+		FPlane(1.0f, 0.0f, 0.0f, 0.0f),
+		FPlane(0.0f, 1.0f, 0.0f, 0.0f),
+		FPlane(0.0f, 0.0f, 0.0f, 1.0f));
+
+	FSceneViewInitOptions ViewInitOptions;
+	ViewInitOptions.ViewFamily = ViewFamily;
+	ViewInitOptions.SetViewRectangle(ViewRect);
+	ViewInitOptions.ViewOrigin = CameraLocation;
+	ViewInitOptions.ViewRotationMatrix = ViewRotationMatrix;
+	ViewInitOptions.ProjectionMatrix = FReversedZPerspectiveMatrix(HalfFovRadians, 1.0f, 1.0f, NearPlane);
+	ViewInitOptions.BackgroundColor = BackgroundColor;
+
+	FSceneView* View = new FSceneView(ViewInitOptions);
+	ViewFamily->Views.Add(View);
+	View->StartFinalPostprocessSettings(ViewInitOptions.ViewOrigin);
+	View->EndFinalPostprocessSettings(ViewInitOptions);
+
+	const float ScreenSize = static_cast<float>(ThumbnailSize);
+	const float FovScreenSize = static_cast<float>(ThumbnailSize) / FMath::Tan(FMath::DegreesToRadians<float>(FovDegrees));
+	IStreamingManager::Get().AddViewInformation(CameraLocation, ScreenSize, FovScreenSize);
+	return View;
+}
+
+bool RenderThumbnailPreviewScene(
+	FPreviewScene& PreviewScene,
+	UTextureRenderTarget2D* RenderTarget,
+	const FVector& CameraLocation,
+	const FRotator& CameraRotation,
+	float CameraFovDegrees,
+	int32 ThumbnailSize,
+	const FLinearColor& BackgroundColor)
+{
+	FTextureRenderTargetResource* RenderTargetResource = RenderTarget ? RenderTarget->GameThread_GetRenderTargetResource() : nullptr;
+	if (!RenderTargetResource)
+	{
+		return false;
+	}
+
+	const FGameTime ThumbnailTime = FGameTime::GetTimeSinceAppStart();
+	FCanvas Canvas(RenderTargetResource, nullptr, ThumbnailTime, GMaxRHIFeatureLevel);
+	Canvas.Clear(BackgroundColor);
+
+	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
+		RenderTargetResource,
+		PreviewScene.GetScene(),
+		FEngineShowFlags(ESFIM_Game))
+		.SetTime(ThumbnailTime)
+		.SetRealtimeUpdate(false));
+
+	ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
+	ViewFamily.EngineShowFlags.MotionBlur = 0;
+	ViewFamily.EngineShowFlags.LOD = 0;
+
+	FSceneView* View = CreateThumbnailSceneView(&ViewFamily, CameraLocation, CameraRotation, CameraFovDegrees, ThumbnailSize, BackgroundColor);
+	if (!View)
+	{
+		return false;
+	}
+
+	ViewFamily.EngineShowFlags.ScreenPercentage = false;
+	ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(ViewFamily, 1.0f));
+
+	if (GEngine)
+	{
+		ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(ViewFamily.Scene));
+		for (const FSceneViewExtensionRef& Extension : ViewFamily.ViewExtensions)
+		{
+			Extension->SetupViewFamily(ViewFamily);
+			Extension->SetupView(ViewFamily, *View);
+		}
+	}
+
+	GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
+	Canvas.Flush_GameThread();
+	FlushRenderingCommands();
+	return true;
+}
+
+UObject* LoadThumbnailAsset(const FString& AssetObjectPath)
+{
+	FSoftObjectPath SoftObjectPath(AssetObjectPath);
+	UObject* Asset = SoftObjectPath.TryLoad();
+	if (!Asset)
+	{
+		Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetObjectPath);
+	}
+	return Asset;
 }
 
 void ConfigurePreviewLighting(FPreviewScene& PreviewScene)
@@ -336,74 +481,15 @@ void ConfigurePreviewLighting(FPreviewScene& PreviewScene)
 	PreviewScene.UpdateCaptureContents();
 }
 
-AStaticMeshActor* CreateBackdropSphere(UWorld* PreviewWorld, FPreviewScene& PreviewScene, const FVector& CameraLocation, const FVector& TargetLocation, const float Radius, const FLinearColor& BackgroundColor)
-{
-	if (!PreviewWorld)
-	{
-		return nullptr;
-	}
-
-	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, ThumbnailBackdropSpherePath);
-	UMaterialInterface* BackdropMaterial = LoadObject<UMaterialInterface>(nullptr, ThumbnailBackdropMaterialPath);
-	if (!SphereMesh || !BackdropMaterial)
-	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to load thumbnail backdrop resources (sphere=%s, material=%s)."), SphereMesh ? TEXT("ok") : TEXT("missing"), BackdropMaterial ? TEXT("ok") : TEXT("missing"));
-		return nullptr;
-	}
-
-	UMaterialInstanceDynamic* BackdropMaterialInstance = UMaterialInstanceDynamic::Create(BackdropMaterial, GetTransientPackage());
-	if (!BackdropMaterialInstance)
-	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to create thumbnail backdrop material instance."));
-		return nullptr;
-	}
-
-	BackdropMaterialInstance->SetVectorParameterValue(ThumbnailBackdropColorParameter, BackgroundColor);
-	if (UMaterial* BaseMaterial = BackdropMaterialInstance->GetMaterial())
-	{
-		BaseMaterial->EnsureIsComplete();
-	}
-	BackdropMaterialInstance->EnsureIsComplete();
-
-	FActorSpawnParameters SpawnInfo;
-	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	SpawnInfo.ObjectFlags = RF_Transient;
-
-	AStaticMeshActor* BackdropActor = PreviewWorld->SpawnActor<AStaticMeshActor>(SpawnInfo);
-	if (!BackdropActor || !BackdropActor->GetStaticMeshComponent())
-	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to spawn thumbnail backdrop actor."));
-		return nullptr;
-	}
-
-	UStaticMeshComponent* BackdropComponent = BackdropActor->GetStaticMeshComponent();
-	BackdropActor->SetActorEnableCollision(false);
-	BackdropComponent->SetCanEverAffectNavigation(false);
-	BackdropComponent->SetMobility(EComponentMobility::Movable);
-	BackdropComponent->SetStaticMesh(SphereMesh);
-	BackdropComponent->SetCastShadow(false);
-	BackdropComponent->bCastDynamicShadow = false;
-	BackdropComponent->bCastStaticShadow = false;
-	BackdropComponent->SetReceivesDecals(false);
-
-	const FVector BackdropCenter = FMath::Lerp(CameraLocation, TargetLocation, 0.5f);
-	const float SphereDiameter = 100.0f;
-	const float BackdropScale = FMath::Max(Radius * 4.0f / SphereDiameter, 10.0f);
-	BackdropActor->SetActorLocation(BackdropCenter, false);
-	BackdropActor->SetActorScale3D(FVector(BackdropScale));
-	BackdropComponent->SetMaterial(0, BackdropMaterialInstance);
-	BackdropComponent->RecreateRenderState_Concurrent();
-	return BackdropActor;
-}
-
-bool CaptureMeshThumbnailViaSceneCapture(UObject* MeshAsset, const FString& OutPngPath, int32 Resolution, const FLinearColor& BackgroundColor)
+bool CaptureMeshThumbnail(UObject* MeshAsset, const FString& OutPngPath, int32 Resolution, const FLinearColor& BackgroundColor, const FThumbnailCaptureOptions& CaptureOptions)
 {
 	if (!MeshAsset)
 	{
 		return false;
 	}
 
-	const int32 ThumbnailSize = FMath::Clamp(Resolution, 64, 2048);
+	const FThumbnailCaptureOptions NormalizedOptions = NormalizeCaptureOptions(CaptureOptions, Resolution);
+	const int32 ThumbnailSize = NormalizedOptions.Resolution;
 	TArray<UTexture*> ForcedTextures;
 
 	FPreviewScene PreviewScene(FPreviewScene::ConstructionValues()
@@ -489,7 +575,7 @@ bool CaptureMeshThumbnailViaSceneCapture(UObject* MeshAsset, const FString& OutP
 
 	if (!PreviewActor || !MeshComponent)
 	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Asset is not a supported mesh type for SceneCapture thumbnail: %s"), *MeshAsset->GetPathName());
+		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Asset is not a supported mesh type for thumbnail capture: %s"), *MeshAsset->GetPathName());
 		return false;
 	}
 
@@ -504,26 +590,18 @@ bool CaptureMeshThumbnailViaSceneCapture(UObject* MeshAsset, const FString& OutP
 	FlushRenderingCommands();
 	IStreamingManager::Get().StreamAllResources(5.0f);
 	FlushRenderingCommands();
+	PreviewScene.GetScene()->UpdateSpeedTreeWind(0.0);
 
 	FVector CameraLocation;
 	FRotator CameraRotation;
-	float CameraFovDegrees = SceneCaptureThumbnailFovDegrees;
+	float CameraFovDegrees = NormalizedOptions.FovDegrees;
 	MeshComponent->UpdateBounds();
-	if (!ComputeThumbnailCameraView(MeshAsset, MeshComponent->Bounds, CameraLocation, CameraRotation, CameraFovDegrees))
+	if (!ComputeThumbnailCameraView(MeshAsset, MeshComponent->Bounds, CameraLocation, CameraRotation, CameraFovDegrees, NormalizedOptions))
 	{
 		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to compute thumbnail camera for %s."), *MeshAsset->GetPathName());
 		RestoreMeshStreamingState(MeshComponent, ForcedTextures);
 		return false;
 	}
-
-	const FVector TargetLocation = MeshComponent->Bounds.Origin;
-	AStaticMeshActor* BackdropActor = CreateBackdropSphere(
-		PreviewWorld,
-		PreviewScene,
-		CameraLocation,
-		TargetLocation,
-		static_cast<float>(MeshComponent->Bounds.SphereRadius + FVector::Distance(CameraLocation, TargetLocation)),
-		BackgroundColor);
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	if (GShaderCompilingManager)
@@ -540,61 +618,23 @@ bool CaptureMeshThumbnailViaSceneCapture(UObject* MeshAsset, const FString& OutP
 		return false;
 	}
 
-	USceneCaptureComponent2D* CaptureComponent = NewObject<USceneCaptureComponent2D>(GetTransientPackage(), NAME_None, RF_Transient);
-	if (!CaptureComponent)
+	if (!RenderThumbnailPreviewScene(PreviewScene, RenderTarget, CameraLocation, CameraRotation, CameraFovDegrees, ThumbnailSize, BackgroundColor))
 	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to create scene capture component for %s."), *MeshAsset->GetPathName());
+		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to render thumbnail preview scene for %s."), *MeshAsset->GetPathName());
 		RestoreMeshStreamingState(MeshComponent, ForcedTextures);
 		return false;
-	}
-
-	CaptureComponent->TextureTarget = RenderTarget;
-	CaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
-	CaptureComponent->ProjectionType = ECameraProjectionMode::Perspective;
-	CaptureComponent->FOVAngle = CameraFovDegrees;
-	CaptureComponent->bCaptureEveryFrame = false;
-	CaptureComponent->bCaptureOnMovement = false;
-	CaptureComponent->bAlwaysPersistRenderingState = true;
-	CaptureComponent->PostProcessBlendWeight = 1.0f;
-	CaptureComponent->PostProcessSettings.bOverride_AutoExposureMethod = true;
-	CaptureComponent->PostProcessSettings.AutoExposureMethod = AEM_Manual;
-	CaptureComponent->PostProcessSettings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-	CaptureComponent->PostProcessSettings.AutoExposureApplyPhysicalCameraExposure = false;
-	CaptureComponent->PostProcessSettings.bOverride_AutoExposureBias = true;
-	CaptureComponent->PostProcessSettings.AutoExposureBias = 0.0f;
-	CaptureComponent->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
-	CaptureComponent->RegisterComponentWithWorld(PreviewWorld);
-	CaptureComponent->ShowFlags.DisableAdvancedFeatures();
-	CaptureComponent->ShowFlags.LOD = 0;
-	CaptureComponent->ShowFlags.SetMotionBlur(false);
-	CaptureComponent->ShowFlags.SetEyeAdaptation(false);
-	CaptureComponent->SetWorldLocationAndRotation(CameraLocation, CameraRotation);
-	CaptureComponent->ShowOnlyActorComponents(PreviewActor);
-	if (BackdropActor)
-	{
-		CaptureComponent->ShowOnlyActorComponents(BackdropActor);
-	}
-
-	for (int32 FrameIndex = 0; FrameIndex < SceneCaptureWarmUpFrames; ++FrameIndex)
-	{
-		CaptureComponent->CaptureScene();
-		FlushRenderingCommands();
-		IStreamingManager::Get().StreamAllResources(1.0f);
 	}
 
 	FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
 	TArray<FColor> CapturedPixels;
 	FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
-	ReadFlags.SetLinearToGamma(false);
 	const bool bReadPixels = RenderTargetResource && RenderTargetResource->ReadPixels(CapturedPixels, ReadFlags);
 
-	CaptureComponent->TextureTarget = nullptr;
-	CaptureComponent->DestroyComponent();
 	RestoreMeshStreamingState(MeshComponent, ForcedTextures);
 
 	if (!bReadPixels || CapturedPixels.Num() != ThumbnailSize * ThumbnailSize)
 	{
-		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to read scene capture pixels for %s (pixels=%d)."), *MeshAsset->GetPathName(), CapturedPixels.Num());
+		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to read thumbnail pixels for %s (pixels=%d)."), *MeshAsset->GetPathName(), CapturedPixels.Num());
 		return false;
 	}
 
@@ -651,12 +691,9 @@ bool ExportNonMeshThumbnail(UObject* Asset, const FString& AssetObjectPath, cons
 
 	return EncodePngFile(OutPngPath, Pixels, Width, Height);
 }
-}
-#endif
 
-bool UThumbnailLibrary::ExportAssetThumbnail(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, FLinearColor BackgroundColor)
+bool ExportAssetThumbnailInternal(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, const FLinearColor& BackgroundColor, const FThumbnailCaptureOptions& CaptureOptions)
 {
-#if WITH_EDITOR
 	if (AssetObjectPath.IsEmpty())
 	{
 		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("AssetObjectPath is empty."));
@@ -669,54 +706,52 @@ bool UThumbnailLibrary::ExportAssetThumbnail(const FString& AssetObjectPath, con
 		return false;
 	}
 
-	FSoftObjectPath SoftObjectPath(AssetObjectPath);
-	UObject* Asset = SoftObjectPath.TryLoad();
-	if (!Asset)
-	{
-		Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetObjectPath);
-	}
-
+	UObject* Asset = LoadThumbnailAsset(AssetObjectPath);
 	if (!Asset)
 	{
 		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to load asset: %s"), *AssetObjectPath);
 		return false;
 	}
 
+	const FThumbnailCaptureOptions NormalizedOptions = NormalizeCaptureOptions(CaptureOptions, Resolution);
+	const int32 EffectiveResolution = NormalizedOptions.Resolution;
+	const bool bHasCustomMeshOptions = NormalizedOptions.bOverrideCamera ||
+		!FMath::IsNearlyEqual(NormalizedOptions.FovDegrees, ThumbnailDefaultFovDegrees) ||
+		CaptureOptions.Resolution > 0;
+
 	if (Asset->IsA<UStaticMesh>() || Asset->IsA<USkeletalMesh>())
 	{
-		const bool bCaptured = CaptureMeshThumbnailViaSceneCapture(Asset, OutPngPath, Resolution, BackgroundColor);
-		if (!bCaptured)
+		const bool bCaptured = CaptureMeshThumbnail(Asset, OutPngPath, EffectiveResolution, BackgroundColor, NormalizedOptions);
+		if (bCaptured)
 		{
-			UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("SceneCapture thumbnail failed for %s."), *AssetObjectPath);
+			return true;
 		}
-		return bCaptured;
+
+		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Mesh thumbnail capture failed for %s; falling back to native thumbnail renderer."), *AssetObjectPath);
 	}
 
-	return ExportNonMeshThumbnail(Asset, AssetObjectPath, OutPngPath, Resolution);
-#else
-	return false;
-#endif
+	return ExportNonMeshThumbnail(Asset, AssetObjectPath, OutPngPath, bHasCustomMeshOptions ? EffectiveResolution : Resolution);
 }
 
-FThumbnailExportResult UThumbnailLibrary::ExportAssetThumbnailWithCamera(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, FLinearColor BackgroundColor)
+FThumbnailExportResult ExportAssetThumbnailWithCameraInternal(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, const FLinearColor& BackgroundColor, const FThumbnailCaptureOptions& CaptureOptions)
 {
 	FThumbnailExportResult Result;
-#if WITH_EDITOR
-	const bool bExported = ExportAssetThumbnail(AssetObjectPath, OutPngPath, Resolution, BackgroundColor);
+	const bool bExported = ExportAssetThumbnailInternal(AssetObjectPath, OutPngPath, Resolution, BackgroundColor, CaptureOptions);
 	if (!bExported)
 	{
 		return Result;
 	}
 
-	FSoftObjectPath SoftObjectPath(AssetObjectPath);
-	UObject* Asset = SoftObjectPath.TryLoad();
-	if (!Asset)
-	{
-		Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetObjectPath);
-	}
-
+	UObject* Asset = LoadThumbnailAsset(AssetObjectPath);
 	if (!Asset || (!Asset->IsA<UStaticMesh>() && !Asset->IsA<USkeletalMesh>()))
 	{
+		Result.bSuccess = true;
+		return Result;
+	}
+
+	if (CaptureOptions.bOverrideCamera)
+	{
+		Result.CameraRotation = ThumbnailCameraRotationFromOrbit(CaptureOptions.OrbitPitch, CaptureOptions.OrbitYaw).Rotator();
 		Result.bSuccess = true;
 		return Result;
 	}
@@ -726,7 +761,45 @@ FThumbnailExportResult UThumbnailLibrary::ExportAssetThumbnailWithCamera(const F
 		UE_LOG(LogSceneAssemblyThumbnail, Warning, TEXT("Failed to resolve thumbnail camera rotation for %s."), *AssetObjectPath);
 		return Result;
 	}
+
 	Result.bSuccess = true;
-#endif
 	return Result;
+}
+}
+#endif
+
+bool UThumbnailLibrary::ExportAssetThumbnail(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, FLinearColor BackgroundColor)
+{
+#if WITH_EDITOR
+	return ExportAssetThumbnailInternal(AssetObjectPath, OutPngPath, Resolution, BackgroundColor, FThumbnailCaptureOptions());
+#else
+	return false;
+#endif
+}
+
+bool UThumbnailLibrary::ExportAssetThumbnailWithOptions(const FString& AssetObjectPath, const FString& OutPngPath, const FThumbnailCaptureOptions& CaptureOptions, int32 Resolution, FLinearColor BackgroundColor)
+{
+#if WITH_EDITOR
+	return ExportAssetThumbnailInternal(AssetObjectPath, OutPngPath, Resolution, BackgroundColor, CaptureOptions);
+#else
+	return false;
+#endif
+}
+
+FThumbnailExportResult UThumbnailLibrary::ExportAssetThumbnailWithCamera(const FString& AssetObjectPath, const FString& OutPngPath, int32 Resolution, FLinearColor BackgroundColor)
+{
+#if WITH_EDITOR
+	return ExportAssetThumbnailWithCameraInternal(AssetObjectPath, OutPngPath, Resolution, BackgroundColor, FThumbnailCaptureOptions());
+#else
+	return FThumbnailExportResult();
+#endif
+}
+
+FThumbnailExportResult UThumbnailLibrary::ExportAssetThumbnailWithCameraAndOptions(const FString& AssetObjectPath, const FString& OutPngPath, const FThumbnailCaptureOptions& CaptureOptions, int32 Resolution, FLinearColor BackgroundColor)
+{
+#if WITH_EDITOR
+	return ExportAssetThumbnailWithCameraInternal(AssetObjectPath, OutPngPath, Resolution, BackgroundColor, CaptureOptions);
+#else
+	return FThumbnailExportResult();
+#endif
 }

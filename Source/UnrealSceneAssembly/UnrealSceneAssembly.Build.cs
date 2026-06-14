@@ -29,6 +29,7 @@ public class UnrealSceneAssembly : ModuleRules
 			"ImageWrapper",
 			"AssetRegistry",
 			"RenderCore",
+			"Renderer",
 			"RHI",
 			"SceneCapture",
 			"DesktopPlatform",
