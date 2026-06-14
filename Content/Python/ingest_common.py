@@ -323,9 +323,15 @@ def asset_identity(asset_data):
     return asset_id, asset_name, asset_path, object_path
 
 
+def _thumbnail_base_dir():
+    saved_dir = unreal.Paths.convert_relative_path_to_full(unreal.Paths.project_saved_dir())
+    rel_parts = [part for part in config.THUMB_REL.strip("/\\").replace("\\", "/").split("/") if part]
+    return os.path.join(saved_dir, "SceneAssembly", *rel_parts)
+
+
 def thumbnail_paths(asset_id):
     filename = "{0}.png".format(asset_id)
-    out_path = os.path.join(config.THUMB_DIR, filename)
+    out_path = os.path.join(_thumbnail_base_dir(), filename)
     relative_path = "{0}/{1}".format(config.THUMB_REL.strip("/"), filename)
     thumbnail_url = _public_url(relative_path)
     return out_path, thumbnail_url
@@ -334,7 +340,7 @@ def thumbnail_paths(asset_id):
 def orient_thumbnail_paths(asset_id):
     suffix = str(getattr(config, "ORIENT_THUMB_SUFFIX", "_orient") or "_orient")
     filename = "{0}{1}.png".format(asset_id, suffix)
-    out_path = os.path.join(config.THUMB_DIR, filename)
+    out_path = os.path.join(_thumbnail_base_dir(), filename)
     relative_path = "{0}/{1}".format(config.THUMB_REL.strip("/"), filename)
     thumbnail_url = _public_url(relative_path)
     return out_path, thumbnail_url

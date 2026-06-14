@@ -8,8 +8,7 @@ PROJECT_NAME = "blockout"
 COLLECTION_DINOv3 = "dinov3_assets_test"
 COLLECTION_CLIP = "clip_assets_test"
 
-# 缩略图本地输出目录与对外访问路径
-THUMB_DIR = r"e:\UE_Projects\blank_ue551\Saved\SceneAssembly\thumbnails\blockout"
+# 缩略图相对路径；本地输出目录由项目 Saved/SceneAssembly/THUMB_REL 动态推导
 THUMB_REL = "thumbnails/blockout"
 ORIENT_THUMB_SUFFIX = "_orient"
 
