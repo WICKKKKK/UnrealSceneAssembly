@@ -660,20 +660,6 @@ FString SSceneAssemblyTestPanel::BuildPayloadJson() const
 	Root->SetStringField(TEXT("scale_mode"), CurrentSettings ? TestScaleModeToString(CurrentSettings->ScaleMode) : TEXT("FitIoU"));
 	Root->SetStringField(TEXT("combine_mode"), CurrentSettings ? TestCombineModeToString(CurrentSettings->CombineMode) : TEXT("Multiplicative"));
 	Root->SetStringField(TEXT("orient_mode"), CurrentSettings ? TestOrientModeToString(CurrentSettings->OrientMode) : TEXT("Precomputed"));
-	if (CurrentSettings)
-	{
-		TSharedRef<FJsonObject> OrientBasis = MakeShared<FJsonObject>();
-		OrientBasis->SetNumberField(TEXT("pitch"), CurrentSettings->OrientBasisRotation.Pitch);
-		OrientBasis->SetNumberField(TEXT("yaw"), CurrentSettings->OrientBasisRotation.Yaw);
-		OrientBasis->SetNumberField(TEXT("roll"), CurrentSettings->OrientBasisRotation.Roll);
-		Root->SetObjectField(TEXT("orient_basis_rotation"), OrientBasis);
-
-		TSharedRef<FJsonObject> ThumbnailCamera = MakeShared<FJsonObject>();
-		ThumbnailCamera->SetNumberField(TEXT("pitch"), CurrentSettings->ThumbnailCameraRotation.Pitch);
-		ThumbnailCamera->SetNumberField(TEXT("yaw"), CurrentSettings->ThumbnailCameraRotation.Yaw);
-		ThumbnailCamera->SetNumberField(TEXT("roll"), CurrentSettings->ThumbnailCameraRotation.Roll);
-		Root->SetObjectField(TEXT("thumbnail_camera_rotation"), ThumbnailCamera);
-	}
 	Root->SetNumberField(TEXT("weight_semantic"), CurrentSettings ? CurrentSettings->WeightSemantic : 1.0f);
 	Root->SetNumberField(TEXT("weight_geometry"), CurrentSettings ? CurrentSettings->WeightGeometry : 1.0f);
 	Root->SetNumberField(TEXT("scale_sensitivity"), CurrentSettings ? CurrentSettings->ScaleSensitivity : 0.5f);

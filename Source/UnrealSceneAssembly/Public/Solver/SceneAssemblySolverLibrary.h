@@ -19,6 +19,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Solve Asset Placement"))
 	static TArray<FPlacementResult> SolvePlacement(const FSceneOBB& SceneOBB, const TArray<FAssetCandidate>& Candidates, const FSolverSettings& Settings);
 
+	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Resolve Image Orientation World Rotation"))
+	static FRotator ResolveImageOrientationWorldRotation(const FAssetCandidate& Candidate, const FSolverSettings& Settings);
+
 	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Run Scene Assembly Solver Self Test"))
 	static bool RunSolverSelfTest(float& OutFitIoU, FString& OutMessage);
 };

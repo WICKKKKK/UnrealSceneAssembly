@@ -11,9 +11,16 @@
 #include "Serialization/JsonWriter.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
+#include "UI/SOrientValidationPanel.h"
 #include "UI/SSceneAssemblyTestPanel.h"
 #include "UI/SMCPControlPanel.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Input/SSegmentedControl.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
+
+#define LOCTEXT_NAMESPACE "FUnrealSceneAssemblyModule"
 
 namespace
 {
@@ -73,6 +80,41 @@ bool DecodeBase64Utf8(const FString& Encoded, FString& OutDecoded)
 	return true;
 }
 
+TSharedRef<SWidget> MakeSceneAssemblyTestTabs()
+{
+	TSharedRef<SWidgetSwitcher> PageSwitcher = SNew(SWidgetSwitcher)
+		+ SWidgetSwitcher::Slot()
+		[
+			SNew(SSceneAssemblyTestPanel)
+		]
+		+ SWidgetSwitcher::Slot()
+		[
+			SNew(SOrientValidationPanel)
+		];
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8.0f, 8.0f, 8.0f, 0.0f)
+		[
+			SNew(SSegmentedControl<int32>)
+			.Value(0)
+			.OnValueChanged_Lambda([PageSwitcher](int32 NewValue)
+			{
+				PageSwitcher->SetActiveWidgetIndex(NewValue);
+			})
+			+ SSegmentedControl<int32>::Slot(0)
+			.Text(LOCTEXT("AssemblyTestPageLabel", "场景装配"))
+			+ SSegmentedControl<int32>::Slot(1)
+			.Text(LOCTEXT("OrientValidationPageLabel", "朝向验证"))
+		]
+		+ SVerticalBox::Slot()
+		.FillHeight(1.0f)
+		[
+			PageSwitcher
+		];
+}
+
 FString GetPluginPythonDirectory()
 {
 	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealSceneAssembly"));
@@ -84,8 +126,6 @@ FString GetPluginPythonDirectory()
 	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("UnrealSceneAssembly/Content/Python")));
 }
 }
-
-#define LOCTEXT_NAMESPACE "FUnrealSceneAssemblyModule"
 
 void FUnrealSceneAssemblyModule::StartupModule()
 {
@@ -234,7 +274,7 @@ TSharedRef<SDockTab> FUnrealSceneAssemblyModule::SpawnTestPanelTab(const FSpawnT
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
 		[
-			SNew(SSceneAssemblyTestPanel)
+			MakeSceneAssemblyTestTabs()
 		];
 }
 

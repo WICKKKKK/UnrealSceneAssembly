@@ -315,6 +315,20 @@ def cleanup_assembly_results_json(payload_b64: str = "") -> str:
 
 
 @_safe_json
+def compute_dual_image_rotation_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.compute_dual_image_rotation(_decode_payload(payload_b64)))
+
+
+@_safe_json
+def compute_precomputed_rotation_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.compute_precomputed_rotation(_decode_payload(payload_b64)))
+
+
+@_safe_json
 def run_assembly_test_json(payload_b64: str = "") -> str:
     from . import assembly_test
 

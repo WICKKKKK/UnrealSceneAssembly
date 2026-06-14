@@ -90,6 +90,24 @@ FVector SafeNormalOr(const FVector& Value, const FVector& Fallback)
 	return Value.GetSafeNormal(UE_SMALL_NUMBER, Fallback);
 }
 
+FQuat ResolveImageOrientationWorldRotationQuat(const FAssetCandidate& Candidate, const FSolverSettings& Settings)
+{
+	FQuat RelativeRotation = QuatFromAxes(
+		SafeNormalOr(Candidate.RelativeOrientationX, FVector::ForwardVector),
+		SafeNormalOr(Candidate.RelativeOrientationY, FVector::RightVector),
+		SafeNormalOr(Candidate.RelativeOrientationZ, FVector::UpVector));
+	if (RelativeRotation.ContainsNaN())
+	{
+		RelativeRotation = Candidate.RelativeOrientation.Quaternion();
+	}
+
+	const FQuat ConceptCamera = Settings.ConceptCameraRotation.Quaternion();
+	const FQuat Basis = Settings.OrientBasisRotation.Quaternion();
+	const FQuat ThumbnailCamera = (Candidate.bHasThumbnailCamera ? Candidate.ThumbnailCameraRotation : Settings.ThumbnailCameraRotation).Quaternion();
+	const FQuat BasisInverse = Basis.Inverse();
+	return (ConceptCamera * BasisInverse * RelativeRotation * Basis * ThumbnailCamera.Inverse()).GetNormalized();
+}
+
 UBoxComponent* FindPreferredBoxComponent(AActor* Actor)
 {
 	if (!Actor)
@@ -238,20 +256,7 @@ bool ResolveOrientedSceneFrame(
 		SceneFrame.GetUnitAxis(EAxis::Z),
 	};
 
-	FQuat RelativeRotation = QuatFromAxes(
-		SafeNormalOr(Candidate.RelativeOrientationX, FVector::ForwardVector),
-		SafeNormalOr(Candidate.RelativeOrientationY, FVector::RightVector),
-		SafeNormalOr(Candidate.RelativeOrientationZ, FVector::UpVector));
-	if (RelativeRotation.ContainsNaN())
-	{
-		RelativeRotation = Candidate.RelativeOrientation.Quaternion();
-	}
-
-	const FQuat ConceptCamera = Settings.ConceptCameraRotation.Quaternion();
-	const FQuat Basis = Settings.OrientBasisRotation.Quaternion();
-	const FQuat ThumbnailCamera = (Candidate.bHasThumbnailCamera ? Candidate.ThumbnailCameraRotation : Settings.ThumbnailCameraRotation).Quaternion();
-	const FQuat BasisInverse = Basis.Inverse();
-	const FQuat TargetRotation = (ConceptCamera * BasisInverse * RelativeRotation * Basis * ThumbnailCamera.Inverse()).GetNormalized();
+	const FQuat TargetRotation = ResolveImageOrientationWorldRotationQuat(Candidate, Settings);
 
 	static const int32 Permutations[6][3] =
 	{
@@ -570,6 +575,17 @@ TArray<FPlacementResult> USceneAssemblySolverLibrary::SolvePlacement(const FScen
 	}
 
 	return Results;
+}
+
+FRotator USceneAssemblySolverLibrary::ResolveImageOrientationWorldRotation(const FAssetCandidate& Candidate, const FSolverSettings& Settings)
+{
+	if (!Candidate.bHasOrientation)
+	{
+		return FRotator::ZeroRotator;
+	}
+
+	const FQuat Rotation = ResolveImageOrientationWorldRotationQuat(Candidate, Settings);
+	return Rotation.ContainsNaN() ? FRotator::ZeroRotator : Rotation.Rotator();
 }
 
 bool USceneAssemblySolverLibrary::RunSolverSelfTest(float& OutFitIoU, FString& OutMessage)

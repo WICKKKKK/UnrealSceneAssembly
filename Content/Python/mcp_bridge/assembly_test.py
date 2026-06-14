@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import math
+import os
 import random
+import time
 import urllib.request
 from typing import Any
 
 import unreal
+import config
+import ingest_common as common
 
 from clip_retrieval import (
     absolute_public_url,
@@ -83,6 +88,103 @@ def cleanup_assembly_results(params: dict[str, Any] | None = None) -> dict[str, 
     tag = _result_tag(params)
     deleted = _cleanup_tagged(tag)
     return _success(tag=tag, deleted_count=deleted)
+
+
+def compute_dual_image_rotation(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    total_started = time.perf_counter()
+    timings: dict[str, float | None] = {}
+
+    started = time.perf_counter()
+    scene_data_uri = _scene_image_data_uri(params)
+    timings["read_scene_ms"] = _elapsed_ms(started)
+
+    started = time.perf_counter()
+    asset_path = _required_asset_path(params)
+    metadata = _query_orient_validation_metadata(asset_path)
+    timings["query_metadata_ms"] = _elapsed_ms(started)
+    image_ref = str(metadata.get("orient_thumbnail_url") or "").strip()
+    if not image_ref:
+        raise SceneCommandError("Asset metadata does not contain orient_thumbnail_url: {0}".format(asset_path))
+
+    started = time.perf_counter()
+    thumbnail_data_uri = _http_image_to_data_uri(image_ref, float(getattr(config, "HTTP_TIMEOUT_SECONDS", 600.0)))
+    timings["download_thumbnail_ms"] = _elapsed_ms(started)
+
+    started = time.perf_counter()
+    response = clip_request_json(
+        "/orient/predict/shared_ref",
+        {
+            "image_ref": scene_data_uri,
+            "image_tgts": [thumbnail_data_uri],
+            "do_rm_bkg_ref": True,
+            "do_rm_bkg_tgt": False,
+        },
+        timeout=None,
+    )
+    timings["orient_predict_ms"] = _elapsed_ms(started)
+    timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
+    results = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(results, list) or not results:
+        raise SceneCommandError("Dual Image orient response does not contain results.")
+    result = results[0] if isinstance(results[0], dict) else {}
+    rel = result.get("rel")
+    if not isinstance(rel, dict):
+        raise SceneCommandError("Dual Image orient response does not contain rel pose.")
+    timings["total_ms"] = _elapsed_ms(total_started)
+    return _success(
+        mode="DualImage",
+        asset_path=metadata.get("asset_path") or _normalize_asset_path(asset_path),
+        asset_id=metadata.get("asset_id"),
+        collection_name=metadata.get("collection_name"),
+        orient_thumbnail_url=metadata.get("orient_thumbnail_url"),
+        relative_orientation=rel,
+        relative_orientation_axes=_pose_axes(rel),
+        thumbnail_camera=metadata.get("thumbnail_camera"),
+        ref_pose=result.get("ref") if isinstance(result.get("ref"), dict) else None,
+        timings=timings,
+    )
+
+
+def compute_precomputed_rotation(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    total_started = time.perf_counter()
+    timings: dict[str, float | None] = {}
+
+    started = time.perf_counter()
+    scene_data_uri = _scene_image_data_uri(params)
+    timings["read_scene_ms"] = _elapsed_ms(started)
+
+    started = time.perf_counter()
+    asset_path = _required_asset_path(params)
+    metadata = _query_orient_validation_metadata(asset_path)
+    timings["query_metadata_ms"] = _elapsed_ms(started)
+    thumb_pose = metadata.get("orient_pose")
+    if not isinstance(thumb_pose, dict):
+        raise SceneCommandError("Asset metadata does not contain orient_pose: {0}".format(asset_path))
+
+    started = time.perf_counter()
+    response = _orient_predict(scene_data_uri, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=None)
+    timings["orient_predict_ms"] = _elapsed_ms(started)
+    timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
+    crop_pose = response.get("ref") if isinstance(response, dict) else None
+    if not isinstance(crop_pose, dict):
+        raise SceneCommandError("Precomputed orient response does not contain concept pose.")
+    rel = _relative_pose_from_absolute(crop_pose, thumb_pose)
+    timings["total_ms"] = _elapsed_ms(total_started)
+    return _success(
+        mode="Precomputed",
+        asset_path=metadata.get("asset_path") or _normalize_asset_path(asset_path),
+        asset_id=metadata.get("asset_id"),
+        collection_name=metadata.get("collection_name"),
+        orient_thumbnail_url=metadata.get("orient_thumbnail_url"),
+        relative_orientation=rel,
+        relative_orientation_axes=_pose_axes(rel),
+        thumbnail_camera=metadata.get("thumbnail_camera"),
+        crop_pose=crop_pose,
+        thumb_pose=thumb_pose,
+        timings=timings,
+    )
 
 
 def run_assembly_test(params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -497,6 +599,101 @@ def _required_actor_path(params: dict[str, Any]) -> str:
     return actor_path
 
 
+def _required_asset_path(params: dict[str, Any]) -> str:
+    asset_path = _optional_string(params.get("asset_path"))
+    if not asset_path:
+        raise SceneCommandError("Parameter 'asset_path' is required.")
+    return _normalize_asset_path(asset_path)
+
+
+def _scene_image_data_uri(params: dict[str, Any]) -> str:
+    scene_image_path = _optional_string(params.get("scene_image_path"))
+    if not scene_image_path:
+        raise SceneCommandError("Parameter 'scene_image_path' is required.")
+    if not os.path.isfile(scene_image_path):
+        raise SceneCommandError("Scene image file does not exist: {0}".format(scene_image_path))
+    with open(scene_image_path, "rb") as handle:
+        image_bytes = handle.read()
+    if not image_bytes:
+        raise SceneCommandError("Scene image file is empty: {0}".format(scene_image_path))
+    ext = os.path.splitext(scene_image_path)[1].lower()
+    mime = "image/jpeg" if ext in {".jpg", ".jpeg"} else "image/png"
+    return "data:{0};base64,{1}".format(mime, base64.b64encode(image_bytes).decode("ascii"))
+
+
+def _query_orient_validation_metadata(asset_path: str) -> dict[str, Any]:
+    normalized_path = _normalize_asset_path(asset_path)
+    asset_id = _asset_id(normalized_path)
+    for collection_name in (config.COLLECTION_DINOv3, config.COLLECTION_CLIP):
+        metadata = _query_orient_validation_metadata_from_collection(collection_name, asset_id, normalized_path)
+        if metadata:
+            return metadata
+    raise SceneCommandError("Missing orient metadata for asset: {0}".format(normalized_path))
+
+
+def _query_orient_validation_metadata_from_collection(collection_name: str, asset_id: str, asset_path: str) -> dict[str, Any] | None:
+    payload = {
+        "filters": {
+            "project_names": [config.PROJECT_NAME],
+            "asset_ids": [asset_id],
+        },
+        "output_fields": ["asset_id", "asset_path", "orient_pose", "thumbnail_camera", "orient_thumbnail_url"],
+        "limit": 1,
+        "offset": 0,
+        "order_by": ["asset_path:asc"],
+    }
+    response = common.request_json("POST", "/milvus/collections/{0}/query_assets".format(collection_name), payload)
+    if not response:
+        return None
+    envelope = response[1]
+    records = common.unwrap_data(envelope) or []
+    for record in records:
+        fields = record.get("fields") if isinstance(record, dict) else None
+        source = fields if isinstance(fields, dict) else record
+        if not isinstance(source, dict):
+            continue
+        record_path = _normalize_asset_path(source.get("asset_path") or "")
+        if record_path != asset_path:
+            continue
+        orient_pose = source.get("orient_pose")
+        thumbnail_camera = source.get("thumbnail_camera")
+        if not isinstance(thumbnail_camera, dict):
+            continue
+        return {
+            "asset_id": source.get("asset_id") or asset_id,
+            "asset_path": record_path,
+            "collection_name": collection_name,
+            "orient_pose": orient_pose if isinstance(orient_pose, dict) else None,
+            "thumbnail_camera": thumbnail_camera,
+            "orient_thumbnail_url": source.get("orient_thumbnail_url"),
+        }
+    return None
+
+
+def _asset_id(asset_path: str) -> str:
+    return hashlib.md5(_normalize_asset_path(asset_path).encode("utf-8")).hexdigest()
+
+
+def _normalize_asset_path(asset_path: Any) -> str:
+    value = str(asset_path or "").strip()
+    slash = value.rfind("/")
+    dot = value.find(".", slash + 1)
+    return value[:dot] if dot >= 0 else value
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _retrieval_model(params: dict[str, Any]) -> str:
     value = str(params.get("retrieval_model") or "DINOv3").strip().lower()
     if value in {"dinov3", "dino", "dino_v3"}:
@@ -534,7 +731,7 @@ def _capture_camera_rotation(capture_context: dict[str, Any]) -> Any:
     return rotation if isinstance(rotation, dict) else None
 
 
-def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mode: str, timeout: float) -> list[dict[str, Any]]:
+def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mode: str, timeout: float | None) -> list[dict[str, Any]]:
     if orient_mode == "Legacy":
         return candidates
     if orient_mode == "DualImage":
@@ -542,7 +739,7 @@ def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mo
     return _with_precomputed_orientation(candidates, data_uri, timeout)
 
 
-def _with_precomputed_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float) -> list[dict[str, Any]]:
+def _with_precomputed_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float | None) -> list[dict[str, Any]]:
     response = _orient_predict(data_uri, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=timeout)
     crop_pose = response.get("ref") if isinstance(response, dict) else None
     if not isinstance(crop_pose, dict):
@@ -570,7 +767,7 @@ def _candidate_orientation_image_ref(candidate: dict[str, Any]) -> str:
     ).strip()
 
 
-def _http_image_to_data_uri(image_ref: str, timeout: float) -> str:
+def _http_image_to_data_uri(image_ref: str, timeout: float | None) -> str:
     value = str(image_ref or "").strip()
     if not value:
         return ""
@@ -578,7 +775,7 @@ def _http_image_to_data_uri(image_ref: str, timeout: float) -> str:
         return value
     url = absolute_public_url(value)
     request = urllib.request.Request(url, headers={"Accept": "image/*"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout or float(getattr(config, "HTTP_TIMEOUT_SECONDS", 600.0))) as response:
         image_bytes = response.read()
         content_type = response.headers.get_content_type() if hasattr(response.headers, "get_content_type") else None
     if not image_bytes:
@@ -588,7 +785,7 @@ def _http_image_to_data_uri(image_ref: str, timeout: float) -> str:
     return "data:{0};base64,{1}".format(content_type, base64.b64encode(image_bytes).decode("ascii"))
 
 
-def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float) -> list[dict[str, Any]]:
+def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float | None) -> list[dict[str, Any]]:
     image_refs = [_candidate_orientation_image_ref(candidate) for candidate in candidates]
     if any(not image_ref for image_ref in image_refs):
         return candidates
@@ -625,7 +822,7 @@ def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str
     return output
 
 
-def _orient_predict(image_ref: str, do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, timeout: float) -> dict[str, Any]:
+def _orient_predict(image_ref: str, do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, timeout: float | None) -> dict[str, Any]:
     return clip_request_json(
         "/orient/predict",
         {
@@ -637,7 +834,7 @@ def _orient_predict(image_ref: str, do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, ti
     )
 
 
-def _orient_preprocess(image_ref: str, timeout: float) -> dict[str, Any]:
+def _orient_preprocess(image_ref: str, timeout: float | None) -> dict[str, Any]:
     return clip_request_json(
         "/orient/preprocess",
         {"image": image_ref},
