@@ -41,7 +41,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列1", ToolTip = "对 M_basis 的第 1 列取负。"))
 	bool bSingleImageFlipColumn1 = false;
 
-	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列2 / Up", ToolTip = "对 M_basis 的第 2 列取负。"))
+	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列2", ToolTip = "对 M_basis 的第 2 列取负。"))
 	bool bSingleImageFlipColumn2 = false;
 
 	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "World Rotation"))
