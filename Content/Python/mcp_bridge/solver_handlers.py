@@ -235,6 +235,7 @@ def _candidate_structs(values: Any) -> list[Any]:
         semantic_score = _first_present(value, "semantic_score", "SemanticScore", "score", default=1.0)
         relative_orientation = _first_present(value, "relative_orientation", "RelativeOrientation", "rel", "relative_pose")
         relative_axes = _first_present(value, "relative_orientation_axes", "RelativeOrientationAxes", "relative_axes")
+        target_orientation = _first_present(value, "target_orientation", "TargetOrientation", "target_pose", "target_abs")
         num_directions = _first_present(value, "num_directions", "NumDirections", default=1)
         thumbnail_camera = _first_present(value, "thumbnail_camera", "thumbnail_camera_rotation", "ThumbnailCamera", "ThumbnailCameraRotation")
 
@@ -247,12 +248,31 @@ def _candidate_structs(values: Any) -> list[Any]:
             _set_struct_property(candidate, "b_has_orientation", True)
             _set_struct_property(candidate, "relative_orientation", _to_rotator(relative_orientation))
             _set_struct_property(candidate, "num_directions", int(num_directions or 0))
+            # Dual Image: the raw Orient relative pose (azimuth, polar, rotation).
+            # The C++ solver rebuilds the geometry from these angles (chirality-aware
+            # change of basis), so forward the triple as-is instead of an FRotator.
+            relative_pose_vec = _relative_pose_vector(relative_orientation)
+            if relative_pose_vec is not None:
+                _set_struct_property(candidate, "b_has_relative_pose", True)
+                _set_struct_property(candidate, "relative_orientation_pose", relative_pose_vec)
         if isinstance(relative_axes, dict):
             _set_struct_property(candidate, "b_has_orientation", True)
             _set_struct_property(candidate, "relative_orientation_x", _vector_from_value(_first_present(relative_axes, "x", "X"), unreal.Vector(1.0, 0.0, 0.0)))
             _set_struct_property(candidate, "relative_orientation_y", _vector_from_value(_first_present(relative_axes, "y", "Y"), unreal.Vector(0.0, 1.0, 0.0)))
             _set_struct_property(candidate, "relative_orientation_z", _vector_from_value(_first_present(relative_axes, "z", "Z"), unreal.Vector(0.0, 0.0, 1.0)))
             _set_struct_property(candidate, "num_directions", int(num_directions or 0))
+        if target_orientation is not None:
+            _set_struct_property(candidate, "b_has_orientation", True)
+            _set_struct_property(candidate, "num_directions", int(num_directions or 0))
+            # Dual Image (preferred path): the model's absolute target_abs pose
+            # (azimuth, polar, rotation) = the object's pose in the scene-capture
+            # camera frame. The C++ solver maps it straight to the Unreal world
+            # frame via World = C_scene * M * Obj(target) * M^-1, with no thumbnail
+            # camera extrinsic involved.
+            target_pose_vec = _relative_pose_vector(target_orientation)
+            if target_pose_vec is not None:
+                _set_struct_property(candidate, "b_has_target_pose", True)
+                _set_struct_property(candidate, "target_orientation_pose", target_pose_vec)
         if thumbnail_camera is not None:
             _set_struct_property(candidate, "b_has_thumbnail_camera", True)
             _set_struct_property(candidate, "thumbnail_camera_rotation", _to_rotator(thumbnail_camera))
@@ -520,6 +540,24 @@ def _get_any_property(owner: Any, names: tuple[str, ...], default: Any = None) -
         if value is not None:
             return value
     return default
+
+
+def _relative_pose_vector(value: Any) -> Any:
+    # Extract the Orient relative pose (azimuth, polar, rotation) from a dict and
+    # pack it into a Vector(X=azimuth, Y=polar, Z=rotation) for the C++ solver.
+    # Returns None when the payload is not an angle triple (e.g. already a rotator).
+    if not isinstance(value, dict):
+        return None
+    azimuth = _first_present(value, "azimuth", "Azimuth", "az")
+    polar = _first_present(value, "polar", "Polar", "elevation", "Elevation", "ele")
+    rotation = _first_present(value, "rotation", "Rotation", "roll", "rot")
+    if azimuth is None and polar is None and rotation is None:
+        return None
+    return unreal.Vector(
+        float(azimuth or 0.0),
+        float(polar or 0.0),
+        float(rotation or 0.0),
+    )
 
 
 def _vector_from_value(value: Any, default: Any = _VECTOR_MISSING) -> Any:

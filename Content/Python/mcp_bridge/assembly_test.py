@@ -112,25 +112,37 @@ def compute_dual_image_rotation(params: dict[str, Any] | None = None) -> dict[st
     timings["download_thumbnail_ms"] = _elapsed_ms(started)
 
     started = time.perf_counter()
+    # Direction B: ref = asset thumbnail, target = scene capture. The model returns
+    # the relative pose ref -> target, i.e. thumbnail -> scene, which is exactly the
+    # rotation we need to place the asset into the scene. The scene image carries the
+    # real background so it is the one that benefits from background removal.
     response = clip_request_json(
-        "/orient/predict/shared_ref",
+        "/orient/predict",
         {
-            "image_ref": scene_data_uri,
-            "image_tgts": [thumbnail_data_uri],
-            "do_rm_bkg_ref": True,
-            "do_rm_bkg_tgt": False,
+            "image_ref": thumbnail_data_uri,
+            "image_tgt": scene_data_uri,
+            "do_rm_bkg_ref": False,
+            "do_rm_bkg_tgt": True,
         },
         timeout=None,
     )
     timings["orient_predict_ms"] = _elapsed_ms(started)
     timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
-    results = response.get("results") if isinstance(response, dict) else None
-    if not isinstance(results, list) or not results:
-        raise SceneCommandError("Dual Image orient response does not contain results.")
-    result = results[0] if isinstance(results[0], dict) else {}
-    rel = result.get("rel")
+    if not isinstance(response, dict):
+        raise SceneCommandError("Dual Image orient response is not a valid object.")
+    rel = response.get("rel")
     if not isinstance(rel, dict):
         raise SceneCommandError("Dual Image orient response does not contain rel pose.")
+    ref_pose = response.get("ref") if isinstance(response.get("ref"), dict) else None
+    target_pose = response.get("target_abs") if isinstance(response.get("target_abs"), dict) else None
+    if not isinstance(target_pose, dict):
+        raise SceneCommandError("Dual Image orient response does not contain target_abs pose.")
+    thumb_pose = metadata.get("orient_pose") if isinstance(metadata.get("orient_pose"), dict) else None
+    # num_directions describes the rotational symmetry of the asset (the thumbnail).
+    # It comes from the ref pose (= thumbnail) in direction B, with the precomputed
+    # ingest value as a fallback.
+    num_directions = _dual_image_num_directions(ref_pose, thumb_pose)
+    branches = _dual_image_branches(target_pose, num_directions)
     timings["total_ms"] = _elapsed_ms(total_started)
     return _success(
         mode="DualImage",
@@ -139,9 +151,13 @@ def compute_dual_image_rotation(params: dict[str, Any] | None = None) -> dict[st
         collection_name=metadata.get("collection_name"),
         orient_thumbnail_url=metadata.get("orient_thumbnail_url"),
         relative_orientation=rel,
+        num_directions=num_directions,
+        branches=branches,
         relative_orientation_axes=_pose_axes(rel),
         thumbnail_camera=metadata.get("thumbnail_camera"),
-        ref_pose=result.get("ref") if isinstance(result.get("ref"), dict) else None,
+        ref_pose=ref_pose,
+        target_pose=target_pose,
+        thumb_pose=thumb_pose,
         timings=timings,
     )
 
@@ -183,6 +199,47 @@ def compute_precomputed_rotation(params: dict[str, Any] | None = None) -> dict[s
         thumbnail_camera=metadata.get("thumbnail_camera"),
         crop_pose=crop_pose,
         thumb_pose=thumb_pose,
+        timings=timings,
+    )
+
+
+def compute_single_image_orientation(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = params or {}
+    total_started = time.perf_counter()
+    timings: dict[str, float | None] = {}
+
+    started = time.perf_counter()
+    scene_data_uri = _scene_image_data_uri(params)
+    timings["read_scene_ms"] = _elapsed_ms(started)
+
+    do_rm_bkg = _bool_param(params, "do_rm_bkg", True)
+    started = time.perf_counter()
+    response = _orient_predict(scene_data_uri, do_rm_bkg_ref=do_rm_bkg, do_rm_bkg_tgt=do_rm_bkg, timeout=None)
+    timings["orient_predict_ms"] = _elapsed_ms(started)
+    timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
+
+    ref_pose = response.get("ref") if isinstance(response, dict) else None
+    if not isinstance(ref_pose, dict):
+        raise SceneCommandError("Single-image orient response does not contain ref pose.")
+
+    raw_num_directions = ref_pose.get("num_directions", 1)
+    try:
+        num_directions = int(1 if raw_num_directions in (None, "") else raw_num_directions)
+    except (TypeError, ValueError):
+        num_directions = 1
+
+    orient_pose = {
+        "azimuth": float(ref_pose.get("azimuth", 0.0)),
+        "polar": float(ref_pose.get("polar", ref_pose.get("elevation", 0.0))),
+        "rotation": float(ref_pose.get("rotation", 0.0)),
+        "num_directions": num_directions,
+    }
+    timings["total_ms"] = _elapsed_ms(total_started)
+    return _success(
+        mode="SingleImage",
+        do_rm_bkg=do_rm_bkg,
+        orient_pose=orient_pose,
+        orient_pose_axes=_pose_axes(orient_pose),
         timings=timings,
     )
 
@@ -624,11 +681,11 @@ def _scene_image_data_uri(params: dict[str, Any]) -> str:
 def _query_orient_validation_metadata(asset_path: str) -> dict[str, Any]:
     normalized_path = _normalize_asset_path(asset_path)
     asset_id = _asset_id(normalized_path)
-    for collection_name in (config.COLLECTION_DINOv3, config.COLLECTION_CLIP):
-        metadata = _query_orient_validation_metadata_from_collection(collection_name, asset_id, normalized_path)
-        if metadata:
-            return metadata
-    raise SceneCommandError("Missing orient metadata for asset: {0}".format(normalized_path))
+    collection_name = config.COLLECTION_CLIP
+    metadata = _query_orient_validation_metadata_from_collection(collection_name, asset_id, normalized_path)
+    if metadata:
+        return metadata
+    raise SceneCommandError("Missing orient metadata in {0} for asset: {1}".format(collection_name, normalized_path))
 
 
 def _query_orient_validation_metadata_from_collection(collection_name: str, asset_id: str, asset_path: str) -> dict[str, Any] | None:
@@ -789,33 +846,42 @@ def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str
     image_refs = [_candidate_orientation_image_ref(candidate) for candidate in candidates]
     if any(not image_ref for image_ref in image_refs):
         return candidates
-    try:
-        image_tgts = [_http_image_to_data_uri(image_ref, timeout) for image_ref in image_refs]
-    except Exception as exc:
-        unreal.log_warning("[SceneAssembly] DualImage orient target download failed: {0}".format(exc))
-        return candidates
-    payload = {
-        "image_ref": data_uri,
-        "image_tgts": image_tgts,
-        "do_rm_bkg_ref": True,
-        "do_rm_bkg_tgt": False,
-    }
-    response = clip_request_json("/orient/predict/shared_ref", payload, timeout=timeout)
-    results = response.get("results") if isinstance(response, dict) else None
-    if not isinstance(results, list):
-        return candidates
-    if len(results) != len(candidates):
-        return candidates
     output = []
-    for candidate, result in zip(candidates, results):
+    for candidate, image_ref in zip(candidates, image_refs):
         item = dict(candidate)
-        rel = result.get("rel") if isinstance(result, dict) else None
-        ref = result.get("ref") if isinstance(result, dict) else None
-        if isinstance(rel, dict):
-            item["relative_orientation"] = rel
-            item["relative_orientation_axes"] = _pose_axes(rel)
+        # Direction B: ref = asset thumbnail, target = scene capture (data_uri).
+        try:
+            thumbnail_data_uri = _http_image_to_data_uri(image_ref, timeout)
+        except Exception as exc:
+            unreal.log_warning("[SceneAssembly] DualImage orient target download failed: {0}".format(exc))
+            output.append(item)
+            continue
+        response = clip_request_json(
+            "/orient/predict",
+            {
+                "image_ref": thumbnail_data_uri,
+                "image_tgt": data_uri,
+                "do_rm_bkg_ref": False,
+                "do_rm_bkg_tgt": True,
+            },
+            timeout=timeout,
+        )
+        rel = response.get("rel") if isinstance(response, dict) else None
+        ref = response.get("ref") if isinstance(response, dict) else None
+        target_pose = response.get("target_abs") if isinstance(response, dict) and isinstance(response.get("target_abs"), dict) else None
+        if isinstance(target_pose, dict):
+            thumb_pose = candidate.get("orient_pose") if isinstance(candidate.get("orient_pose"), dict) else None
+            num_directions = _dual_image_num_directions(ref, thumb_pose)
+            item["target_pose"] = target_pose
+            item["num_directions"] = num_directions
+            item["branches"] = _dual_image_branches(target_pose, num_directions)
+            if isinstance(rel, dict):
+                item["relative_orientation"] = rel
+                item["relative_orientation_axes"] = _pose_axes(rel)
+            if isinstance(thumb_pose, dict):
+                item["thumb_pose"] = thumb_pose
             if isinstance(ref, dict):
-                item["num_directions"] = int(ref.get("num_directions", candidate.get("num_directions", 1)) or 0)
+                item["ref_pose"] = ref
             if isinstance(candidate.get("thumbnail_camera"), dict):
                 item["thumbnail_camera"] = candidate.get("thumbnail_camera")
         output.append(item)
@@ -851,10 +917,77 @@ def _relative_pose_from_absolute(crop_pose: dict[str, Any], thumb_pose: dict[str
 
 def _pose_axes(pose: dict[str, Any]) -> dict[str, list[float]]:
     matrix = _pose_matrix(pose)
+    return _matrix_axes(matrix)
+
+
+def _dual_image_num_directions(ref_pose: dict[str, Any] | None, thumb_pose: dict[str, Any] | None) -> int:
+    # In direction B the ref image is the asset thumbnail, so its predicted
+    # num_directions describes the asset's rotational symmetry. Fall back to the
+    # precomputed ingest pose when the live prediction does not provide it.
+    for source in (ref_pose, thumb_pose):
+        if isinstance(source, dict):
+            value = source.get("num_directions")
+            if value not in (None, ""):
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    return parsed
+    return 1
+
+
+def _dual_image_branches(target_pose: dict[str, Any], num_directions: int) -> list[dict[str, Any]]:
+    # Base pose is the model's absolute target pose (target_abs) = the object's
+    # pose in the scene-capture camera frame. Rotational symmetry of the asset
+    # means several azimuth values are visually indistinguishable, so enumerate
+    # every symmetric azimuth offset: Obj(az + k*360/N, el, ro) = Obj(az, el, ro)
+    # post-rotated about the object's own vertical axis, which is a no-op for an
+    # N-fold symmetric object. The C++ solver maps each branch to the world frame.
+    try:
+        count = int(num_directions)
+    except (TypeError, ValueError):
+        count = 1
+    if count <= 1:
+        offsets = [0]
+    else:
+        step = 360.0 / count
+        offsets = [int(round(step * index)) for index in range(count)]
+
+    base_az = float(target_pose.get("azimuth", 0.0))
+    base_polar = float(target_pose.get("polar", target_pose.get("elevation", 0.0)))
+    base_rot = float(target_pose.get("rotation", 0.0))
+
+    branches: list[dict[str, Any]] = []
+    for offset in offsets:
+        pose = {
+            "azimuth": base_az + float(offset),
+            "polar": base_polar,
+            "rotation": base_rot,
+        }
+        branches.append(
+            {
+                "azimuth_offset": offset,
+                "target_orientation": pose,
+                "target_orientation_axes": _pose_axes(pose),
+            }
+        )
+    return branches
+
+
+def _matrix_axes(matrix: list[list[float]]) -> dict[str, list[float]]:
     return {
         "x": [matrix[0][0], matrix[1][0], matrix[2][0]],
         "y": [matrix[0][1], matrix[1][1], matrix[2][1]],
         "z": [matrix[0][2], matrix[1][2], matrix[2][2]],
+    }
+
+
+def _matrix_rows(matrix: list[list[float]]) -> dict[str, list[float]]:
+    return {
+        "x": [matrix[0][0], matrix[0][1], matrix[0][2]],
+        "y": [matrix[1][0], matrix[1][1], matrix[1][2]],
+        "z": [matrix[2][0], matrix[2][1], matrix[2][2]],
     }
 
 

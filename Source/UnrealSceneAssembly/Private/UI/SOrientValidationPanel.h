@@ -8,6 +8,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class FJsonObject;
+struct FPropertyChangedEvent;
 class IDetailsView;
 class UStaticMesh;
 struct FSlateBrush;
@@ -28,12 +29,26 @@ private:
 		FRotator WorldRotation = FRotator::ZeroRotator;
 		FString RelativePoseText;
 		FString MetadataText;
+		// Symmetry branches (azimuth offsets from num_directions). Each entry is an
+		// alternative world rotation; the user picks the one matching the concept art.
+		TArray<FRotator> BranchRotations;
+		TArray<int32> BranchAzimuthOffsets;
 	};
 
 	bool CallController(const FString& FunctionCall, TSharedPtr<FJsonObject>& OutObject);
 	FString BuildPayloadJson() const;
 	bool ComputeRotation(const TCHAR* ControllerFunctionName, const FText& ModeLabel, FComputedRotation& OutRotation);
 	bool ApplyRotationResponse(const TSharedPtr<FJsonObject>& Response, FComputedRotation& OutRotation);
+	FString BuildSingleImagePayloadJson() const;
+	int32 GetSingleImageBasisCandidateIndex() const;
+	FString GetSingleImageBasisSummary() const;
+	void DrawSingleImageAxes(bool bClearExisting);
+	void DrawRotationResultAxes(const FComputedRotation& RotationResult, const FString& Label, bool bClearExisting);
+	int32 GetSingleImageDirectionCount() const;
+	double GetSingleImageDirectionAzimuthOffset() const;
+	FString BuildAxesText(const FVector& FrontWorld, const FVector& RightWorld, const FVector& UpWorld) const;
+	void OnSettingsFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
+	void RefreshSingleImageAxesForCurrentSettings();
 	FString BuildTimingReport(const TSharedPtr<FJsonObject>& Response, const FText& ModeLabel, double RoundTripMs) const;
 	void UpdateSettingsResults();
 	void LoadCaptureMetadataFromJson();
@@ -48,18 +63,25 @@ private:
 	FReply OnJumpToCaptureCameraClicked();
 	FReply OnComputeDualImageClicked();
 	FReply OnComputePrecomputedClicked();
+	FReply OnComputeSingleImageClicked();
+	FReply OnDrawSingleImageAxesClicked();
+	FReply OnCycleSingleImageDirectionClicked();
+	FReply OnClearSingleImageAxesClicked();
 	FReply OnSpawnDualImageClicked();
 	FReply OnSpawnPrecomputedClicked();
 	FReply OnCleanupClicked();
 	FReply OnOpenCaptureFolderClicked();
 
 	FText GetCaptureInfoText() const;
+	FText GetSingleImageInfoText() const;
 	FText GetLastResultText() const;
 	FText GetLogText() const;
 	const FSlateBrush* GetSceneBrush() const;
 	bool HasCaptureCamera() const;
 	bool HasSceneCapturePath() const;
 	bool CanCompute() const;
+	bool CanComputeSingleImage() const;
+	bool CanDrawSingleImageAxes() const;
 	bool CanSpawnDualImage() const;
 	bool CanSpawnPrecomputed() const;
 
@@ -80,6 +102,13 @@ private:
 
 	FComputedRotation DualImageResult;
 	FComputedRotation PrecomputedResult;
+	bool bHasSingleImageResult = false;
+	FVector SingleImageOrientPose = FVector::ZeroVector;
+	int32 SingleImageNumDirections = 1;
+	int32 SingleImageDirectionIndex = 0;
+	FString SingleImageAxesText;
+	FString DualImageAxesText;
+	FString PrecomputedAxesText;
 	FString LastResult = TEXT("就绪。");
 	FString LogText = TEXT("就绪。");
 };

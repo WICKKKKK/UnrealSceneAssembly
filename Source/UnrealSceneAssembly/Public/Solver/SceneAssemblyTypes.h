@@ -82,12 +82,32 @@ struct UNREALSCENEASSEMBLY_API FAssetCandidate
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	int32 NumDirections = 1;
 
+	// Dual Image: raw Orient relative pose (azimuth, polar, rotation) in degrees.
+	// When set, the solver rebuilds the geometry in C++ (Obj(rel) + chirality-aware
+	// change of basis) instead of consuming the pre-baked axis vectors above.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	bool bHasRelativePose = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector RelativeOrientationPose = FVector::ZeroVector;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	bool bHasThumbnailCamera = false;
 
 	// Per-asset thumbnail camera orientation in asset-local space T_t.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
+
+	// Dual Image: the model's absolute target pose (azimuth, polar, rotation) in
+	// degrees, i.e. Orient's target_abs prediction = the object's pose in the
+	// scene-capture camera observation frame. When set, the solver maps it
+	// directly to the Unreal world frame via World = C_scene * M * Obj(target) * M^-1,
+	// which needs no thumbnail camera extrinsic. This is the preferred Dual Image path.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	bool bHasTargetPose = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector TargetOrientationPose = FVector::ZeroVector;
 };
 
 USTRUCT(BlueprintType)

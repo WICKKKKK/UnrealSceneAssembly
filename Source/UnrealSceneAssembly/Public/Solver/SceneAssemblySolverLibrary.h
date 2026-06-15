@@ -22,6 +22,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Resolve Image Orientation World Rotation"))
 	static FRotator ResolveImageOrientationWorldRotation(const FAssetCandidate& Candidate, const FSolverSettings& Settings);
 
+	static int32 GetSingleImageBasisCandidateCount();
+	static FString GetSingleImageBasisCandidateLabel(int32 BasisCandidateIndex);
+	static void ComputeSingleImageWorldAxes(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex, FVector& OutFrontWorld, FVector& OutRightWorld, FVector& OutUpWorld);
+
 	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Run Scene Assembly Solver Self Test"))
 	static bool RunSolverSelfTest(float& OutFitIoU, FString& OutMessage);
 };

@@ -329,6 +329,13 @@ def compute_precomputed_rotation_json(payload_b64: str = "") -> str:
 
 
 @_safe_json
+def compute_single_image_orientation_json(payload_b64: str = "") -> str:
+    from . import assembly_test
+
+    return _json_payload(assembly_test.compute_single_image_orientation(_decode_payload(payload_b64)))
+
+
+@_safe_json
 def run_assembly_test_json(payload_b64: str = "") -> str:
     from . import assembly_test
 
