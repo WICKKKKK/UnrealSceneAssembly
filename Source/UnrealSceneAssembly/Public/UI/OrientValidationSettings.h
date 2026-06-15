@@ -26,6 +26,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = "参数", meta = (DisplayName = "当前摆放资产", ToolTip = "用于朝向验证的 Static Mesh，可从 Content Browser 拖入。"))
 	TObjectPtr<UStaticMesh> TargetMesh = nullptr;
 
+	UPROPERTY(EditAnywhere, Category = "Rotation计算", meta = (DisplayName = "计算Rotation", ToolTip = "开启：单图朝向输出世界 FRotator；关闭：使用旧的逐轴向量模式作为对照。"))
+	bool bSingleImageComputeRotation = true;
+
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "轴顺序", ToolTip = "列向量映射顺序。6 种轴排列 x 3 个符号翻转 = 48 种 M_basis。"))
 	EOrientValidationAxisOrder SingleImageAxisOrder = EOrientValidationAxisOrder::YXZ;
 
@@ -37,9 +40,6 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列2 / Up", ToolTip = "对 M_basis 的第 2 列取负。"))
 	bool bSingleImageFlipColumn2 = false;
-
-	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转 X/Y 输出(Front/Right)", ToolTip = "在 M_basis 和相机旋转之后交换 Front 与 Right 两个输出向量，Up 不动。默认关闭；仅用于对照旧 XYZ + 输出翻转方案。"))
-	bool bSingleImageSwapFrontRightOutput = false;
 
 	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "World Rotation"))
 	FRotator DualImageWorldRotation = FRotator::ZeroRotator;

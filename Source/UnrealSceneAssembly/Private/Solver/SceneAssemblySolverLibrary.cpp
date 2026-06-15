@@ -828,6 +828,19 @@ FString USceneAssemblySolverLibrary::GetSingleImageBasisCandidateLabel(int32 Bas
 		(SignMask & 1) ? TEXT('-') : TEXT('+'));
 }
 
+FRotator USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(
+	const FVector& OrientPoseDeg,
+	const FRotator& CameraRotation,
+	int32 BasisCandidateIndex)
+{
+	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
+	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
+	const FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	const FQuat CameraLocalRotation = QuatFromColumnMatrix(CameraLocalAxes);
+	const FQuat WorldRotation = (CameraRotation.Quaternion() * CameraLocalRotation).GetNormalized();
+	return WorldRotation.ContainsNaN() ? FRotator::ZeroRotator : WorldRotation.Rotator();
+}
+
 void USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(
 	const FVector& OrientPoseDeg,
 	const FRotator& CameraRotation,

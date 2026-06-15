@@ -565,15 +565,14 @@ FString SOrientValidationPanel::GetSingleImageBasisSummary() const
 	const UOrientValidationSettings* SettingsPtr = Settings.IsValid() ? Settings.Get() : nullptr;
 	const int32 BasisIndex = GetSingleImageBasisCandidateIndex();
 	return FString::Printf(
-		TEXT("[%d/%d] %s | AxisOrder=%s, FlipCol0=%s, FlipCol1=%s, FlipCol2=%s, 翻转X/Y输出=%s"),
+		TEXT("[%d/%d] %s | AxisOrder=%s, FlipCol0=%s, FlipCol1=%s, FlipCol2=%s"),
 		BasisIndex + 1,
 		FMath::Max(1, USceneAssemblySolverLibrary::GetSingleImageBasisCandidateCount()),
 		*USceneAssemblySolverLibrary::GetSingleImageBasisCandidateLabel(BasisIndex),
 		OrientValidationAxisOrderLabel(SettingsPtr ? SettingsPtr->SingleImageAxisOrder : EOrientValidationAxisOrder::XYZ),
 		SettingsPtr && SettingsPtr->bSingleImageFlipColumn0 ? TEXT("true") : TEXT("false"),
 		SettingsPtr && SettingsPtr->bSingleImageFlipColumn1 ? TEXT("true") : TEXT("false"),
-		SettingsPtr && SettingsPtr->bSingleImageFlipColumn2 ? TEXT("true") : TEXT("false"),
-		SettingsPtr && SettingsPtr->bSingleImageSwapFrontRightOutput ? TEXT("true") : TEXT("false"));
+		SettingsPtr && SettingsPtr->bSingleImageFlipColumn2 ? TEXT("true") : TEXT("false"));
 }
 
 FString SOrientValidationPanel::BuildAxesText(const FVector& FrontWorld, const FVector& RightWorld, const FVector& UpWorld) const
@@ -614,15 +613,26 @@ void SOrientValidationPanel::DrawSingleImageAxes(bool bClearExisting)
 	FVector PoseWithOffset = SingleImageOrientPose;
 	PoseWithOffset.X = FMath::Fmod(SingleImageOrientPose.X + GetSingleImageDirectionAzimuthOffset() + 360.0, 360.0);
 
+	const int32 BasisCandidateIndex = GetSingleImageBasisCandidateIndex();
+	const bool bComputeRotation = !Settings.IsValid() || Settings->bSingleImageComputeRotation;
 	FVector FrontWorld = FVector::ForwardVector;
 	FVector RightWorld = FVector::RightVector;
 	FVector UpWorld = FVector::UpVector;
-	USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, GetSingleImageBasisCandidateIndex(), FrontWorld, RightWorld, UpWorld);
-	if (Settings.IsValid() && Settings->bSingleImageSwapFrontRightOutput)
+	if (bComputeRotation)
 	{
-		Swap(FrontWorld, RightWorld);
+		SingleImageAxesText.Empty();
+		SingleImageWorldRotation = USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex);
+		const FRotationMatrix RotationMatrix(SingleImageWorldRotation);
+		FrontWorld = RotationMatrix.GetScaledAxis(EAxis::X).GetSafeNormal();
+		RightWorld = RotationMatrix.GetScaledAxis(EAxis::Y).GetSafeNormal();
+		UpWorld = RotationMatrix.GetScaledAxis(EAxis::Z).GetSafeNormal();
 	}
-	SingleImageAxesText = BuildAxesText(FrontWorld, RightWorld, UpWorld);
+	else
+	{
+		USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, FrontWorld, RightWorld, UpWorld);
+		SingleImageWorldRotation = FRotationMatrix::MakeFromXZ(FrontWorld, UpWorld).Rotator();
+		SingleImageAxesText = BuildAxesText(FrontWorld, RightWorld, UpWorld);
+	}
 
 	const FVector Origin = FVector::ZeroVector;
 	DrawDebugPoint(World, Origin, OrientValidationSingleImageOriginPointSize, FColor::White, true, -1.0f, SDPG_World);
@@ -668,13 +678,13 @@ void SOrientValidationPanel::DrawRotationResultAxes(const FComputedRotation& Rot
 void SOrientValidationPanel::OnSettingsFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	const bool bChangedSingleImageBasis =
+	const bool bChangedSingleImageSettings =
+		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageComputeRotation) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, SingleImageAxisOrder) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn0) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn1) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn2) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageSwapFrontRightOutput);
-	if (bChangedSingleImageBasis)
+		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn2);
+	if (bChangedSingleImageSettings)
 	{
 		RefreshSingleImageAxesForCurrentSettings();
 	}
@@ -688,7 +698,7 @@ void SOrientValidationPanel::RefreshSingleImageAxesForCurrentSettings()
 	}
 
 	DrawSingleImageAxes(true);
-	LastResult = TEXT("M_basis 参数已更新，已自动重绘单图世界三轴。 ");
+	LastResult = TEXT("单图朝向参数已更新，已自动重绘世界三轴。 ");
 	AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
 }
 
@@ -1103,6 +1113,7 @@ FReply SOrientValidationPanel::OnCaptureSceneClicked()
 	SingleImageOrientPose = FVector::ZeroVector;
 	SingleImageNumDirections = 1;
 	SingleImageDirectionIndex = 0;
+	SingleImageWorldRotation = FRotator::ZeroRotator;
 	SingleImageAxesText.Empty();
 	UpdateSettingsResults();
 	LastResult = CaptureWidth > 0 && CaptureHeight > 0
@@ -1192,6 +1203,7 @@ FReply SOrientValidationPanel::OnComputeSingleImageClicked()
 		OrientValidationGetNumberField(OrientPose, TEXT("rotation"), 0.0));
 	SingleImageNumDirections = OrientValidationGetIntField(OrientPose, TEXT("num_directions"), 1);
 	SingleImageDirectionIndex = 0;
+	SingleImageWorldRotation = FRotator::ZeroRotator;
 	SingleImageAxesText.Empty();
 	bHasSingleImageResult = true;
 
@@ -1320,8 +1332,10 @@ FText SOrientValidationPanel::GetCaptureInfoText() const
 
 FText SOrientValidationPanel::GetSingleImageInfoText() const
 {
+	const bool bComputeRotation = !Settings.IsValid() || Settings->bSingleImageComputeRotation;
 	FString Text = FString::Printf(
-		TEXT("当前 M_basis：%s\n绘制：世界原点 (0,0,0)，轴长 %.0f，Front=红 / Right=绿 / Up=蓝，白点=原点"),
+		TEXT("计算模式：%s\n当前 M_basis：%s\n绘制：世界原点 (0,0,0)，轴长 %.0f，Front=红 / Right=绿 / Up=蓝，白点=原点"),
+		bComputeRotation ? TEXT("Rotation / 世界 FRotator") : TEXT("逐轴向量 / 对照模式"),
 		*GetSingleImageBasisSummary(),
 		OrientValidationSingleImageAxisLength);
 	if (!bHasSingleImageResult)
@@ -1341,9 +1355,21 @@ FText SOrientValidationPanel::GetSingleImageInfoText() const
 		SingleImageDirectionIndex + 1,
 		FMath::Max(1, GetSingleImageDirectionCount()),
 		GetSingleImageDirectionAzimuthOffset());
-	if (!SingleImageAxesText.IsEmpty())
+	if (bComputeRotation)
 	{
-		Text += TEXT("\n") + SingleImageAxesText;
+		Text += FString::Printf(
+			TEXT("\nWorld Rotation：Pitch %+.3f, Yaw %+.3f, Roll %+.3f"),
+			SingleImageWorldRotation.Pitch,
+			SingleImageWorldRotation.Yaw,
+			SingleImageWorldRotation.Roll);
+	}
+	else if (!SingleImageAxesText.IsEmpty())
+	{
+		Text += TEXT("\n逐轴向量三轴：\n") + SingleImageAxesText;
+	}
+	else
+	{
+		Text += TEXT("\n逐轴向量三轴：尚未绘制。");
 	}
 	if (SingleImageNumDirections != 1)
 	{

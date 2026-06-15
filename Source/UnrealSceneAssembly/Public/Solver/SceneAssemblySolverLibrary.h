@@ -24,6 +24,7 @@ public:
 
 	static int32 GetSingleImageBasisCandidateCount();
 	static FString GetSingleImageBasisCandidateLabel(int32 BasisCandidateIndex);
+	static FRotator ComputeSingleImageWorldRotation(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex);
 	static void ComputeSingleImageWorldAxes(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex, FVector& OutFrontWorld, FVector& OutRightWorld, FVector& OutUpWorld);
 
 	UFUNCTION(BlueprintCallable, Category = "Scene Assembly|Solver", meta = (DisplayName = "Run Scene Assembly Solver Self Test"))

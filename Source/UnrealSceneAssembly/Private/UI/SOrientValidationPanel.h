@@ -106,6 +106,7 @@ private:
 	FVector SingleImageOrientPose = FVector::ZeroVector;
 	int32 SingleImageNumDirections = 1;
 	int32 SingleImageDirectionIndex = 0;
+	FRotator SingleImageWorldRotation = FRotator::ZeroRotator;
 	FString SingleImageAxesText;
 	FString DualImageAxesText;
 	FString PrecomputedAxesText;
