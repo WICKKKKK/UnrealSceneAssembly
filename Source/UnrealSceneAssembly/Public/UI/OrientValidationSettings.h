@@ -29,14 +29,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Rotation计算", meta = (DisplayName = "计算Rotation", ToolTip = "开启：单图朝向输出世界 FRotator；关闭：使用旧的逐轴向量模式作为对照。"))
 	bool bSingleImageComputeRotation = true;
 
+	UPROPERTY(EditAnywhere, Category = "Rotation计算", meta = (DisplayName = "交换Front/Right", ToolTip = "在转换前交换 front/right 两列，用于将 XYZ+翻转列0 这类镜像基校正为合法 Rotation，同时对调 Front/Right 标签。"))
+	bool bSingleImageSwapFrontRight = true;
+
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "轴顺序", ToolTip = "列向量映射顺序。6 种轴排列 x 3 个符号翻转 = 48 种 M_basis。"))
-	EOrientValidationAxisOrder SingleImageAxisOrder = EOrientValidationAxisOrder::YXZ;
+	EOrientValidationAxisOrder SingleImageAxisOrder = EOrientValidationAxisOrder::XYZ;
 
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列0", ToolTip = "对 M_basis 的第 0 列取负。"))
-	bool bSingleImageFlipColumn0 = false;
+	bool bSingleImageFlipColumn0 = true;
 
-	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列1", ToolTip = "对 M_basis 的第 1 列取负。默认开启，对应当前 YXZ 基的第 1 列翻转。"))
-	bool bSingleImageFlipColumn1 = true;
+	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列1", ToolTip = "对 M_basis 的第 1 列取负。"))
+	bool bSingleImageFlipColumn1 = false;
 
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列2 / Up", ToolTip = "对 M_basis 的第 2 列取负。"))
 	bool bSingleImageFlipColumn2 = false;

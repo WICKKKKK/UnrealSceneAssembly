@@ -565,14 +565,15 @@ FString SOrientValidationPanel::GetSingleImageBasisSummary() const
 	const UOrientValidationSettings* SettingsPtr = Settings.IsValid() ? Settings.Get() : nullptr;
 	const int32 BasisIndex = GetSingleImageBasisCandidateIndex();
 	return FString::Printf(
-		TEXT("[%d/%d] %s | AxisOrder=%s, FlipCol0=%s, FlipCol1=%s, FlipCol2=%s"),
+		TEXT("[%d/%d] %s | AxisOrder=%s, FlipCol0=%s, FlipCol1=%s, FlipCol2=%s, SwapFR=%s"),
 		BasisIndex + 1,
 		FMath::Max(1, USceneAssemblySolverLibrary::GetSingleImageBasisCandidateCount()),
 		*USceneAssemblySolverLibrary::GetSingleImageBasisCandidateLabel(BasisIndex),
 		OrientValidationAxisOrderLabel(SettingsPtr ? SettingsPtr->SingleImageAxisOrder : EOrientValidationAxisOrder::XYZ),
 		SettingsPtr && SettingsPtr->bSingleImageFlipColumn0 ? TEXT("true") : TEXT("false"),
 		SettingsPtr && SettingsPtr->bSingleImageFlipColumn1 ? TEXT("true") : TEXT("false"),
-		SettingsPtr && SettingsPtr->bSingleImageFlipColumn2 ? TEXT("true") : TEXT("false"));
+		SettingsPtr && SettingsPtr->bSingleImageFlipColumn2 ? TEXT("true") : TEXT("false"),
+		SettingsPtr && SettingsPtr->bSingleImageSwapFrontRight ? TEXT("true") : TEXT("false"));
 }
 
 FString SOrientValidationPanel::BuildAxesText(const FVector& FrontWorld, const FVector& RightWorld, const FVector& UpWorld) const
@@ -615,13 +616,14 @@ void SOrientValidationPanel::DrawSingleImageAxes(bool bClearExisting)
 
 	const int32 BasisCandidateIndex = GetSingleImageBasisCandidateIndex();
 	const bool bComputeRotation = !Settings.IsValid() || Settings->bSingleImageComputeRotation;
+	const bool bSwapFrontRight = !Settings.IsValid() || Settings->bSingleImageSwapFrontRight;
 	FVector FrontWorld = FVector::ForwardVector;
 	FVector RightWorld = FVector::RightVector;
 	FVector UpWorld = FVector::UpVector;
 	if (bComputeRotation)
 	{
 		SingleImageAxesText.Empty();
-		SingleImageWorldRotation = USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex);
+		SingleImageWorldRotation = USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight);
 		const FRotationMatrix RotationMatrix(SingleImageWorldRotation);
 		FrontWorld = RotationMatrix.GetScaledAxis(EAxis::X).GetSafeNormal();
 		RightWorld = RotationMatrix.GetScaledAxis(EAxis::Y).GetSafeNormal();
@@ -629,7 +631,7 @@ void SOrientValidationPanel::DrawSingleImageAxes(bool bClearExisting)
 	}
 	else
 	{
-		USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, FrontWorld, RightWorld, UpWorld);
+		USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight, FrontWorld, RightWorld, UpWorld);
 		SingleImageWorldRotation = FRotationMatrix::MakeFromXZ(FrontWorld, UpWorld).Rotator();
 		SingleImageAxesText = BuildAxesText(FrontWorld, RightWorld, UpWorld);
 	}
@@ -680,6 +682,7 @@ void SOrientValidationPanel::OnSettingsFinishedChangingProperties(const FPropert
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
 	const bool bChangedSingleImageSettings =
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageComputeRotation) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageSwapFrontRight) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, SingleImageAxisOrder) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn0) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn1) ||

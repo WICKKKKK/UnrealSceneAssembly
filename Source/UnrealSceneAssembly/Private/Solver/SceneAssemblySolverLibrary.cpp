@@ -139,6 +139,17 @@ double Mat3Determinant(const FMat3& A)
 		+ A.M[0][2] * (A.M[1][0] * A.M[2][1] - A.M[1][1] * A.M[2][0]);
 }
 
+FMat3 Mat3SwapColumns01(const FMat3& A)
+{
+	FMat3 R = A;
+	for (int32 Row = 0; Row < 3; ++Row)
+	{
+		R.M[Row][0] = A.M[Row][1];
+		R.M[Row][1] = A.M[Row][0];
+	}
+	return R;
+}
+
 FMat3 Mat3RotX(double Rad)
 {
 	const double c = FMath::Cos(Rad);
@@ -831,11 +842,16 @@ FString USceneAssemblySolverLibrary::GetSingleImageBasisCandidateLabel(int32 Bas
 FRotator USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(
 	const FVector& OrientPoseDeg,
 	const FRotator& CameraRotation,
-	int32 BasisCandidateIndex)
+	int32 BasisCandidateIndex,
+	bool bSwapFrontRight)
 {
 	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
 	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
-	const FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	if (bSwapFrontRight)
+	{
+		CameraLocalAxes = Mat3SwapColumns01(CameraLocalAxes);
+	}
 	const FQuat CameraLocalRotation = QuatFromColumnMatrix(CameraLocalAxes);
 	const FQuat WorldRotation = (CameraRotation.Quaternion() * CameraLocalRotation).GetNormalized();
 	return WorldRotation.ContainsNaN() ? FRotator::ZeroRotator : WorldRotation.Rotator();
@@ -845,13 +861,18 @@ void USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(
 	const FVector& OrientPoseDeg,
 	const FRotator& CameraRotation,
 	int32 BasisCandidateIndex,
+	bool bSwapFrontRight,
 	FVector& OutFrontWorld,
 	FVector& OutRightWorld,
 	FVector& OutUpWorld)
 {
 	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
 	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
-	const FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	if (bSwapFrontRight)
+	{
+		CameraLocalAxes = Mat3SwapColumns01(CameraLocalAxes);
+	}
 
 	OutFrontWorld = CameraRotation.RotateVector(Mat3Column(CameraLocalAxes, 0)).GetSafeNormal();
 	OutRightWorld = CameraRotation.RotateVector(Mat3Column(CameraLocalAxes, 1)).GetSafeNormal();
