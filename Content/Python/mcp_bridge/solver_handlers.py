@@ -244,21 +244,21 @@ def _candidate_structs(values: Any) -> list[Any]:
         _set_struct_property(candidate, "bbox_half_extents", bbox_half_extents)
         _set_struct_property(candidate, "semantic_score", float(semantic_score))
         if target_orientation is not None:
-            _set_struct_property(candidate, "b_has_orientation", True)
+            _set_any_struct_property(candidate, ("has_orientation", "b_has_orientation"), True)
             _set_struct_property(candidate, "num_directions", int(num_directions or 0))
             # Dual Image: absolute ref/target_abs poses. C++ maps both through the
             # calibrated single-image basis and applies target * ref^-1 in world space.
             target_pose_vec = _relative_pose_vector(target_orientation)
             if target_pose_vec is not None:
-                _set_struct_property(candidate, "b_has_target_pose", True)
+                _set_any_struct_property(candidate, ("has_target_pose", "b_has_target_pose"), True)
                 _set_struct_property(candidate, "target_orientation_pose", target_pose_vec)
         if ref_orientation is not None:
             ref_pose_vec = _relative_pose_vector(ref_orientation)
             if ref_pose_vec is not None:
-                _set_struct_property(candidate, "b_has_ref_pose", True)
+                _set_any_struct_property(candidate, ("has_ref_pose", "b_has_ref_pose"), True)
                 _set_struct_property(candidate, "ref_orientation_pose", ref_pose_vec)
         if thumbnail_camera is not None:
-            _set_struct_property(candidate, "b_has_thumbnail_camera", True)
+            _set_any_struct_property(candidate, ("has_thumbnail_camera", "b_has_thumbnail_camera"), True)
             _set_struct_property(candidate, "thumbnail_camera_rotation", _to_rotator(thumbnail_camera))
         candidates.append(candidate)
     return candidates

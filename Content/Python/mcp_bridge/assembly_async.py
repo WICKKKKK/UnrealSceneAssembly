@@ -207,7 +207,11 @@ class AssemblyJob:
     def _search_item(self, item: dict[str, Any], data_uri: str) -> dict[str, Any]:
         try:
             candidate_limit = assembly_test._int_param(self.params, "candidate_limit", 20)
-            timeout = assembly_test._float_param(self.params, "timeout", 15.0)
+            timeout = assembly_test._float_param(
+                self.params,
+                "timeout",
+                float(getattr(assembly_test.config, "HTTP_TIMEOUT_SECONDS", 600.0)),
+            )
             retrieval_model = assembly_test._retrieval_model(self.params)
             common_search_kwargs = {
                 "image_url": data_uri,

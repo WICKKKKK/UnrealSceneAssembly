@@ -290,7 +290,7 @@ def _solve_one(actor: Any, id_entry: dict[str, Any], capture_context: dict[str, 
             return item
 
         candidate_limit = _int_param(params, "candidate_limit", 20)
-        timeout = _float_param(params, "timeout", 15.0)
+        timeout = _float_param(params, "timeout", float(getattr(config, "HTTP_TIMEOUT_SECONDS", 600.0)))
         retrieval_model = _retrieval_model(params)
         common_search_kwargs = {
             "image_url": data_uri,
@@ -746,12 +746,8 @@ def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mo
     return _with_dual_image_orientation(candidates, data_uri, timeout)
 
 
-def _candidate_orientation_image_ref(candidate: dict[str, Any]) -> str:
-    return str(
-        candidate.get("orient_thumbnail_abs_url")
-        or absolute_public_url(str(candidate.get("orient_thumbnail_url") or candidate.get("thumbnail_url") or ""))
-        or ""
-    ).strip()
+def _candidate_thumbnail_image_ref(candidate: dict[str, Any]) -> str:
+    return str(absolute_public_url(str(candidate.get("thumbnail_url") or "")) or "").strip()
 
 
 def _http_image_to_data_uri(image_ref: str, timeout: float | None) -> str:
@@ -773,28 +769,34 @@ def _http_image_to_data_uri(image_ref: str, timeout: float | None) -> str:
 
 
 def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float | None) -> list[dict[str, Any]]:
-    image_refs = []
-    for candidate in candidates:
-        image_ref = _candidate_orientation_image_ref(candidate)
-        image_refs.append(image_ref)
+    output = [dict(candidate) for candidate in candidates]
+    request_indices: list[int] = []
+    image_refs: list[str] = []
+    for index, candidate in enumerate(candidates):
+        image_ref = _candidate_thumbnail_image_ref(candidate)
         if not image_ref:
-            unreal.log_warning("[SceneAssembly] DualImage skipped candidate without orient thumbnail: {0}".format(candidate.get("asset_path") or candidate.get("AssetPath") or ""))
-    output = []
-    for candidate, image_ref in zip(candidates, image_refs):
-        item = dict(candidate)
-        if not image_ref:
-            output.append(item)
+            unreal.log_warning("[SceneAssembly] DualImage skipped candidate without thumbnail: {0}".format(candidate.get("asset_path") or candidate.get("AssetPath") or ""))
             continue
-        # shared_target: ref = asset thumbnail, target = scene capture (data_uri).
         try:
-            thumbnail_data_uri = _http_image_to_data_uri(image_ref, timeout)
+            image_refs.append(_http_image_to_data_uri(image_ref, timeout))
+            request_indices.append(index)
         except Exception as exc:
-            unreal.log_warning("[SceneAssembly] DualImage orient target download failed: {0}".format(exc))
-            output.append(item)
-            continue
-        response = _orient_predict_shared_target(data_uri, [thumbnail_data_uri], do_rm_bkg_ref=False, do_rm_bkg_tgt=True, timeout=timeout)
-        results = response.get("results") if isinstance(response, dict) else None
-        result = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else None
+            unreal.log_warning("[SceneAssembly] DualImage thumbnail download failed: {0}".format(exc))
+
+    if not image_refs:
+        return output
+
+    # shared_target: refs = asset thumbnails, target = scene capture (data_uri).
+    response = _orient_predict_shared_target(data_uri, image_refs, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=timeout)
+    results = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(results, list):
+        unreal.log_warning("[SceneAssembly] DualImage shared_target returned no results.")
+        return output
+
+    for request_offset, candidate_index in enumerate(request_indices):
+        candidate = candidates[candidate_index]
+        item = output[candidate_index]
+        result = results[request_offset] if request_offset < len(results) and isinstance(results[request_offset], dict) else None
         rel = result.get("rel") if isinstance(result, dict) else None
         ref = result.get("ref") if isinstance(result, dict) else None
         target_pose = result.get("target_abs") if isinstance(result, dict) and isinstance(result.get("target_abs"), dict) else None
@@ -813,7 +815,6 @@ def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str
                 item["ref_pose"] = ref
             if isinstance(candidate.get("thumbnail_camera"), dict):
                 item["thumbnail_camera"] = candidate.get("thumbnail_camera")
-        output.append(item)
     return output
 
 
