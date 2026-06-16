@@ -119,7 +119,7 @@ FString TestOrientModeToString(ESceneAssemblyOrientMode OrientMode)
 	case ESceneAssemblyOrientMode::Legacy:
 		return TEXT("Legacy");
 	default:
-		return TEXT("Precomputed");
+		return TEXT("DualImage");
 	}
 }
 
@@ -659,7 +659,7 @@ FString SSceneAssemblyTestPanel::BuildPayloadJson() const
 
 	Root->SetStringField(TEXT("scale_mode"), CurrentSettings ? TestScaleModeToString(CurrentSettings->ScaleMode) : TEXT("FitIoU"));
 	Root->SetStringField(TEXT("combine_mode"), CurrentSettings ? TestCombineModeToString(CurrentSettings->CombineMode) : TEXT("Multiplicative"));
-	Root->SetStringField(TEXT("orient_mode"), CurrentSettings ? TestOrientModeToString(CurrentSettings->OrientMode) : TEXT("Precomputed"));
+	Root->SetStringField(TEXT("orient_mode"), CurrentSettings ? TestOrientModeToString(CurrentSettings->OrientMode) : TEXT("DualImage"));
 	Root->SetNumberField(TEXT("weight_semantic"), CurrentSettings ? CurrentSettings->WeightSemantic : 1.0f);
 	Root->SetNumberField(TEXT("weight_geometry"), CurrentSettings ? CurrentSettings->WeightGeometry : 1.0f);
 	Root->SetNumberField(TEXT("scale_sensitivity"), CurrentSettings ? CurrentSettings->ScaleSensitivity : 0.5f);

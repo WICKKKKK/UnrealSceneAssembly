@@ -24,6 +24,7 @@ public:
 
 	static int32 GetSingleImageBasisCandidateCount();
 	static FString GetSingleImageBasisCandidateLabel(int32 BasisCandidateIndex);
+	static FRotator GetDefaultThumbnailCameraRotation();
 	static FRotator ComputeSingleImageWorldRotation(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex, bool bSwapFrontRight);
 	static void ComputeSingleImageWorldAxes(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex, bool bSwapFrontRight, FVector& OutFrontWorld, FVector& OutRightWorld, FVector& OutUpWorld);
 

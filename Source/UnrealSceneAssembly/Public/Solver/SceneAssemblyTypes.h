@@ -21,7 +21,6 @@ UENUM(BlueprintType)
 enum class ESceneAssemblyOrientMode : uint8
 {
 	Legacy UMETA(DisplayName = "Legacy"),
-	Precomputed UMETA(DisplayName = "Precomputed"),
 	DualImage UMETA(DisplayName = "Dual Image"),
 };
 
@@ -65,31 +64,8 @@ struct UNREALSCENEASSEMBLY_API FAssetCandidate
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	bool bHasOrientation = false;
 
-	// Model-space relative rotation from concept crop to this asset thumbnail.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FRotator RelativeOrientation = FRotator::ZeroRotator;
-
-	// Preferred representation: model-space basis axes of RelativeOrientation.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FVector RelativeOrientationX = FVector::ForwardVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FVector RelativeOrientationY = FVector::RightVector;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FVector RelativeOrientationZ = FVector::UpVector;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	int32 NumDirections = 1;
-
-	// Dual Image: raw Orient relative pose (azimuth, polar, rotation) in degrees.
-	// When set, the solver rebuilds the geometry in C++ (Obj(rel) + chirality-aware
-	// change of basis) instead of consuming the pre-baked axis vectors above.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	bool bHasRelativePose = false;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FVector RelativeOrientationPose = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	bool bHasThumbnailCamera = false;
@@ -98,11 +74,17 @@ struct UNREALSCENEASSEMBLY_API FAssetCandidate
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
 
+	// Dual Image: the model's absolute ref pose (azimuth, polar, rotation) in
+	// degrees, i.e. Orient's prediction for the asset thumbnail image.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	bool bHasRefPose = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
+	FVector RefOrientationPose = FVector::ZeroVector;
+
 	// Dual Image: the model's absolute target pose (azimuth, polar, rotation) in
 	// degrees, i.e. Orient's target_abs prediction = the object's pose in the
-	// scene-capture camera observation frame. When set, the solver maps it
-	// directly to the Unreal world frame via World = C_scene * M * Obj(target) * M^-1,
-	// which needs no thumbnail camera extrinsic. This is the preferred Dual Image path.
+	// scene-capture camera observation frame.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	bool bHasTargetPose = false;
 
@@ -122,19 +104,19 @@ struct UNREALSCENEASSEMBLY_API FSolverSettings
 	ESceneAssemblyScoreCombineMode CombineMode = ESceneAssemblyScoreCombineMode::Multiplicative;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	ESceneAssemblyOrientMode OrientMode = ESceneAssemblyOrientMode::Legacy;
+	ESceneAssemblyOrientMode OrientMode = ESceneAssemblyOrientMode::DualImage;
 
 	// Captured concept camera world rotation C_c.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
 	FRotator ConceptCameraRotation = FRotator::ZeroRotator;
 
-	// Model camera convention to Unreal convention calibration B.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FRotator OrientBasisRotation = FRotator::ZeroRotator;
+	// Orient pose-to-Unreal calibration. Default 4 = XYZ + flip column 0, matching
+	// the validated single-image test setup.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver", meta = (ClampMin = "0", ClampMax = "47"))
+	int32 OrientBasisCandidateIndex = 4;
 
-	// Thumbnail camera orientation in asset-local space T_t.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver")
-	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
+	bool bOrientSwapFrontRight = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scene Assembly|Solver", meta = (ClampMin = "0.0"))
 	float WeightSemantic = 1.0f;

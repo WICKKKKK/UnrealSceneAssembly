@@ -5,6 +5,7 @@
 #include "Math/Quat.h"
 #include "Math/RotationMatrix.h"
 #include "Math/UnrealMathUtility.h"
+#include "ThumbnailRendering/SceneThumbnailInfo.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSceneAssemblySolver, Log, All);
 
@@ -13,6 +14,8 @@ namespace
 constexpr double MinExtent = 1.0e-4;
 constexpr double MinLogInput = 1.0e-8;
 constexpr double SquareRatioTolerance = 1.0e-6;
+constexpr float DefaultThumbnailOrbitPitch = -11.25f;
+constexpr float DefaultThumbnailOrbitYaw = -157.5f;
 
 FVector AbsVector(const FVector& Value)
 {
@@ -85,11 +88,6 @@ FQuat QuatFromAxes(const FVector& AxisX, const FVector& AxisY, const FVector& Ax
 	return Quat;
 }
 
-FVector SafeNormalOr(const FVector& Value, const FVector& Fallback)
-{
-	return Value.GetSafeNormal(UE_SMALL_NUMBER, Fallback);
-}
-
 // --- Dual Image geometry helpers --------------------------------------------
 // All matrices here use the standard math / column-vector active convention
 // (v' = R * v), matching the Orient-Anything Python reference (_pose_matrix).
@@ -114,19 +112,6 @@ FMat3 Mat3Mul(const FMat3& A, const FMat3& B)
 		for (int32 j = 0; j < 3; ++j)
 		{
 			R.M[i][j] = A.M[i][0] * B.M[0][j] + A.M[i][1] * B.M[1][j] + A.M[i][2] * B.M[2][j];
-		}
-	}
-	return R;
-}
-
-FMat3 Mat3Transpose(const FMat3& A)
-{
-	FMat3 R;
-	for (int32 i = 0; i < 3; ++i)
-	{
-		for (int32 j = 0; j < 3; ++j)
-		{
-			R.M[i][j] = A.M[j][i];
 		}
 	}
 	return R;
@@ -191,31 +176,6 @@ FMat3 OrientPoseMatrix(double AzimuthDeg, double PolarDeg, double RotationDeg)
 	const double El = FMath::DegreesToRadians(PolarDeg);
 	const double Ro = FMath::DegreesToRadians(RotationDeg);
 	return Mat3Mul(Mat3RotX(Ro), Mat3Mul(Mat3RotY(El), Mat3RotZ(-Az)));
-}
-
-// Chirality-aware change of basis from the Orient (right-handed, Blender-style)
-// frame to the Unreal (left-handed) frame. Because right-handed -> left-handed
-// is a reflection (det = -1), it cannot be expressed as a quaternion, so the
-// conjugation M * R * M^-1 must run in matrix space. The conjugation result is
-// always a proper rotation (det = +1) and is safe to convert to FQuat.
-//
-// The mapping is derived from the model's documented axis convention, verified
-// against the Orient axis overlay (front=red, up=blue, right=green):
-//   front  +X_model -> +X_ue   (Unreal forward)
-//   up     +Z_model -> +Z_ue   (Unreal up)
-//   right  +Y_model -> -Y_ue   (right-handed model right -> left-handed Unreal)
-// i.e. M = diag(1, -1, 1): flip Y to convert handedness while keeping forward/up.
-//
-// NOTE: this single constant is the only Orient<->Unreal calibration value.
-// It is intentionally isolated here so it can be re-tuned from calibration
-// samples without touching the rest of the pipeline.
-FMat3 OrientToUnrealBasis()
-{
-	FMat3 R;
-	R.M[0][0] = 1; R.M[0][1] = 0; R.M[0][2] = 0;
-	R.M[1][0] = 0; R.M[1][1] = -1; R.M[1][2] = 0;
-	R.M[2][0] = 0; R.M[2][1] = 0; R.M[2][2] = 1;
-	return R; // det = -1 (reflection: flips Y, flips handedness)
 }
 
 static constexpr int32 SingleImageBasisPermutationCount = 6;
@@ -291,54 +251,94 @@ FQuat QuatFromColumnMatrix(const FMat3& R)
 	return Quat;
 }
 
-// Dual Image: map the model's absolute target pose to the Unreal world frame.
-//   TargetUE = M * Obj(target_abs) * M^-1          (re-expressed in Unreal frame)
-//   World    = C_scene * TargetUE
-// where target_abs is Orient's prediction of the object's pose in the scene-capture
-// camera observation frame, C_scene is that camera's Unreal world rotation, and M is
-// the fixed Orient<->Unreal calibration (OrientToUnrealBasis). Because the scene image
-// is taken by the C_scene camera, the "model scene-camera frame" and the Unreal scene
-// camera are the same camera in two coordinate conventions, related only by M. No
-// thumbnail camera extrinsic is needed on this path.
+FMat3 ImagePoseCameraLocalAxes(const FVector& OrientPoseDeg, int32 BasisCandidateIndex, bool bSwapFrontRight)
+{
+	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
+	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
+	FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
+	if (bSwapFrontRight)
+	{
+		CameraLocalAxes = Mat3SwapColumns01(CameraLocalAxes);
+	}
+	return CameraLocalAxes;
+}
+
+FQuat ComputeImageObjectWorldRotationQuat(const FVector& OrientPoseDeg, const FRotator& CameraRotation, int32 BasisCandidateIndex, bool bSwapFrontRight)
+{
+	const FMat3 CameraLocalAxes = ImagePoseCameraLocalAxes(OrientPoseDeg, BasisCandidateIndex, bSwapFrontRight);
+	const FQuat CameraLocalRotation = QuatFromColumnMatrix(CameraLocalAxes);
+	return (CameraRotation.Quaternion() * CameraLocalRotation).GetNormalized();
+}
+
+FRotator DefaultThumbnailCameraRotation()
+{
+	float OrbitPitch = DefaultThumbnailOrbitPitch;
+	float OrbitYaw = DefaultThumbnailOrbitYaw;
+#if WITH_EDITOR
+	if (const USceneThumbnailInfo* ThumbnailInfo = GetDefault<USceneThumbnailInfo>())
+	{
+		OrbitPitch = ThumbnailInfo->OrbitPitch;
+		OrbitYaw = ThumbnailInfo->OrbitYaw;
+	}
+#endif
+
+	// Mirrors ThumbnailLibrary.cpp::ThumbnailCameraRotationFromOrbit and UE's scene thumbnail view.
+	const FRotator RotationOffsetToViewCenter(0.0f, 90.0f, 0.0f);
+	FMatrix ThumbnailViewRotation = FRotationMatrix(FRotator(0.0f, OrbitYaw, 0.0f))
+		* FRotationMatrix(FRotator(0.0f, 0.0f, OrbitPitch))
+		* FInverseRotationMatrix(RotationOffsetToViewCenter);
+	ThumbnailViewRotation = ThumbnailViewRotation.RemoveTranslation();
+
+	FMatrix CameraToLocal = ThumbnailViewRotation.InverseFast();
+	CameraToLocal.RemoveScaling();
+	FQuat Rotation(CameraToLocal);
+	if (!Rotation.IsNormalized())
+	{
+		Rotation.Normalize();
+	}
+	return Rotation.Rotator();
+}
+
+// Dual Image uses the validated single-image mapping for both images. target_abs
+// gives the scene-observed object rotation; ref gives the thumbnail-observed
+// residual of an asset rendered at authored identity. Apply the residual in world
+// rotation space: Actor = R_target * R_ref^-1.
 FQuat ResolveDualImageWorldRotationQuat(const FAssetCandidate& Candidate, const FSolverSettings& Settings)
 {
-	const FMat3 Basis = OrientToUnrealBasis();
-	const FMat3 BasisInv = Mat3Transpose(Basis); // orthogonal reflection: inverse = transpose
-	const FMat3 TargetOrient = OrientPoseMatrix(
-		Candidate.TargetOrientationPose.X,
-		Candidate.TargetOrientationPose.Y,
-		Candidate.TargetOrientationPose.Z);
-	const FMat3 TargetUE = Mat3Mul(Basis, Mat3Mul(TargetOrient, BasisInv));
+	const int32 BasisCandidateIndex = GetClampedSingleImageBasisCandidateIndex(Settings.OrientBasisCandidateIndex);
+	const bool bSwapFrontRight = Settings.bOrientSwapFrontRight;
+	const FQuat TargetWorld = ComputeImageObjectWorldRotationQuat(
+		Candidate.TargetOrientationPose,
+		Settings.ConceptCameraRotation,
+		BasisCandidateIndex,
+		bSwapFrontRight);
 
-	const FQuat ConceptCamera = Settings.ConceptCameraRotation.Quaternion();
-	const FQuat TargetUEQuat = QuatFromColumnMatrix(TargetUE);
-	return (ConceptCamera * TargetUEQuat).GetNormalized();
+	if (!Candidate.bHasRefPose)
+	{
+		return TargetWorld;
+	}
+
+	const FRotator ThumbnailCamera = Candidate.bHasThumbnailCamera
+		? Candidate.ThumbnailCameraRotation
+		: DefaultThumbnailCameraRotation();
+	const FQuat RefWorld = ComputeImageObjectWorldRotationQuat(
+		Candidate.RefOrientationPose,
+		ThumbnailCamera,
+		BasisCandidateIndex,
+		bSwapFrontRight);
+	return (TargetWorld * RefWorld.Inverse()).GetNormalized();
 }
 
 FQuat ResolveImageOrientationWorldRotationQuat(const FAssetCandidate& Candidate, const FSolverSettings& Settings)
 {
-	// Dual Image maps the model's absolute target pose (target_abs) to the Unreal
-	// world frame in C++ (chirality-aware change of basis); the pre-baked axes and
-	// thumbnail camera extrinsic are not used on this path.
-	if (Settings.OrientMode == ESceneAssemblyOrientMode::DualImage && Candidate.bHasTargetPose)
+	// Dual Image maps ref/target_abs through the same calibrated single-image basis,
+	// then removes the ref residual introduced by Orient's thumbnail prediction.
+	if (Settings.OrientMode == ESceneAssemblyOrientMode::DualImage && Candidate.bHasTargetPose && Candidate.bHasRefPose)
 	{
 		return ResolveDualImageWorldRotationQuat(Candidate, Settings);
 	}
 
-	FQuat RelativeRotation = QuatFromAxes(
-		SafeNormalOr(Candidate.RelativeOrientationX, FVector::ForwardVector),
-		SafeNormalOr(Candidate.RelativeOrientationY, FVector::RightVector),
-		SafeNormalOr(Candidate.RelativeOrientationZ, FVector::UpVector));
-	if (RelativeRotation.ContainsNaN())
-	{
-		RelativeRotation = Candidate.RelativeOrientation.Quaternion();
-	}
-
-	const FQuat ConceptCamera = Settings.ConceptCameraRotation.Quaternion();
-	const FQuat Basis = Settings.OrientBasisRotation.Quaternion();
-	const FQuat ThumbnailCamera = (Candidate.bHasThumbnailCamera ? Candidate.ThumbnailCameraRotation : Settings.ThumbnailCameraRotation).Quaternion();
-	const FQuat BasisInverse = Basis.Inverse();
-	return (ConceptCamera * BasisInverse * RelativeRotation * Basis * ThumbnailCamera.Inverse()).GetNormalized();
+	return FQuat::Identity;
 }
 
 UBoxComponent* FindPreferredBoxComponent(AActor* Actor)
@@ -603,10 +603,10 @@ bool BuildPendingPlacement(
 	}
 
 	FRedirectedSceneFrame RedirectedSceneFrame;
-	const bool bUseImageOrientation = Settings.OrientMode != ESceneAssemblyOrientMode::Legacy;
+	const bool bUseImageOrientation = Settings.OrientMode == ESceneAssemblyOrientMode::DualImage;
 	bool bUsedImageOrientation = false;
 	bool bHasRedirectedSceneFrame = false;
-	if (bUseImageOrientation && Candidate.bHasOrientation)
+	if (bUseImageOrientation && Candidate.bHasOrientation && Candidate.bHasTargetPose && Candidate.bHasRefPose)
 	{
 		bHasRedirectedSceneFrame = ResolveOrientedSceneFrame(SceneLocalCenter, SceneHalfExtents, SceneFrame, Candidate, Settings, RedirectedSceneFrame);
 		bUsedImageOrientation = bHasRedirectedSceneFrame;
@@ -845,16 +845,13 @@ FRotator USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(
 	int32 BasisCandidateIndex,
 	bool bSwapFrontRight)
 {
-	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
-	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
-	FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
-	if (bSwapFrontRight)
-	{
-		CameraLocalAxes = Mat3SwapColumns01(CameraLocalAxes);
-	}
-	const FQuat CameraLocalRotation = QuatFromColumnMatrix(CameraLocalAxes);
-	const FQuat WorldRotation = (CameraRotation.Quaternion() * CameraLocalRotation).GetNormalized();
+	const FQuat WorldRotation = ComputeImageObjectWorldRotationQuat(OrientPoseDeg, CameraRotation, BasisCandidateIndex, bSwapFrontRight);
 	return WorldRotation.ContainsNaN() ? FRotator::ZeroRotator : WorldRotation.Rotator();
+}
+
+FRotator USceneAssemblySolverLibrary::GetDefaultThumbnailCameraRotation()
+{
+	return DefaultThumbnailCameraRotation();
 }
 
 void USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(
@@ -866,13 +863,7 @@ void USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(
 	FVector& OutRightWorld,
 	FVector& OutUpWorld)
 {
-	const FMat3 Basis = SingleImageBasisCandidate(BasisCandidateIndex);
-	const FMat3 ObjectPose = OrientPoseMatrix(OrientPoseDeg.X, OrientPoseDeg.Y, OrientPoseDeg.Z);
-	FMat3 CameraLocalAxes = Mat3Mul(Basis, ObjectPose);
-	if (bSwapFrontRight)
-	{
-		CameraLocalAxes = Mat3SwapColumns01(CameraLocalAxes);
-	}
+	const FMat3 CameraLocalAxes = ImagePoseCameraLocalAxes(OrientPoseDeg, BasisCandidateIndex, bSwapFrontRight);
 
 	OutFrontWorld = CameraRotation.RotateVector(Mat3Column(CameraLocalAxes, 0)).GetSafeNormal();
 	OutRightWorld = CameraRotation.RotateVector(Mat3Column(CameraLocalAxes, 1)).GetSafeNormal();
@@ -944,32 +935,9 @@ bool USceneAssemblySolverLibrary::RunSolverSelfTest(float& OutFitIoU, FString& O
 		&& FVector::DotProduct(TippedActorUpAxis, ExpectedTippedFrame.Rotation.GetAxisZ()) >= 0.999f
 		&& FVector::Dist(TippedPlacedBottomCenter, ExpectedTippedFrame.BottomCenter) <= 1.0e-3f;
 
-	FSceneOBB OrientedSceneOBB;
-	OrientedSceneOBB.LocalCenter = FVector::ZeroVector;
-	OrientedSceneOBB.HalfExtents = FVector(100.0, 50.0, 25.0);
-	OrientedSceneOBB.WorldTransform = FTransform(FQuat::Identity, FVector::ZeroVector, FVector::OneVector);
-
-	FAssetCandidate OrientedCandidate;
-	OrientedCandidate.AssetPath = TEXT("/SceneAssembly/SelfTestOrientedAsset");
-	OrientedCandidate.BboxCenter = FVector::ZeroVector;
-	OrientedCandidate.BboxHalfExtents = FVector(10.0, 2.5, 5.0);
-	OrientedCandidate.SemanticScore = 1.0f;
-	OrientedCandidate.bHasOrientation = true;
-	OrientedCandidate.RelativeOrientationX = FVector::ForwardVector;
-	OrientedCandidate.RelativeOrientationY = FVector::UpVector;
-	OrientedCandidate.RelativeOrientationZ = -FVector::RightVector;
-
-	FSolverSettings OrientedSettings = Settings;
-	OrientedSettings.OrientMode = ESceneAssemblyOrientMode::Precomputed;
-	TArray<FAssetCandidate> OrientedCandidates;
-	OrientedCandidates.Add(OrientedCandidate);
-	const TArray<FPlacementResult> OrientedResults = SolvePlacement(OrientedSceneOBB, OrientedCandidates, OrientedSettings);
-	const bool bOrientedPass = !OrientedResults.IsEmpty()
-		&& FVector::DotProduct(OrientedResults[0].Transform.GetUnitAxis(EAxis::Z), -FVector::RightVector) >= 0.999f;
-
 	// Dual Image math self-test: pin down the column-vector matrix convention,
-	// verify the chirality-aware change of basis stays a proper rotation, and
-	// assert the end-to-end world rotation on hand-computed physical anchors.
+	// verify the validated single-image basis stays a proper rotation, and assert
+	// the ref-corrected world rotation on hand-computed physical anchors.
 	bool bDualImagePass = true;
 	FString DualImageDiag;
 	{
@@ -979,52 +947,58 @@ bool USceneAssemblySolverLibrary::RunSolverSelfTest(float& OutFitIoU, FString& O
 		const FVector Rotated = RotZ90Quat.RotateVector(FVector(1.0, 0.0, 0.0));
 		const bool bColumnConventionPass = FVector::Dist(Rotated, FVector(0.0, 1.0, 0.0)) <= 1.0e-4f;
 
-		// 2) The basis must be a reflection (det = -1) so it encodes handedness flip.
-		const double BasisDet = Mat3Determinant(OrientToUnrealBasis());
+		// 2) The validated basis is a reflection and swapFR turns it into a proper rotation.
+		const FMat3 Basis = SingleImageBasisCandidate(4);
+		const double BasisDet = Mat3Determinant(Basis);
 		const bool bBasisReflectionPass = FMath::IsNearlyEqual(BasisDet, -1.0, 1.0e-6);
+		const FMat3 CanonAxes = ImagePoseCameraLocalAxes(FVector::ZeroVector, 4, true);
+		const double CanonDet = Mat3Determinant(CanonAxes);
+		const bool bCanonAxesPass = FMath::IsNearlyEqual(CanonDet, 1.0, 1.0e-6);
 
-		// 3) M * Obj(pose) * M^-1 must be a proper rotation (det = +1) for any pose.
-		const FMat3 Basis = OrientToUnrealBasis();
-		const FMat3 BasisInv = Mat3Transpose(Basis);
-		const FMat3 PoseOrient = OrientPoseMatrix(37.0, 12.0, -8.0);
-		const FMat3 PoseUE = Mat3Mul(Basis, Mat3Mul(PoseOrient, BasisInv));
-		const double PoseUEDet = Mat3Determinant(PoseUE);
-		const bool bConjugationPass = FMath::IsNearlyEqual(PoseUEDet, 1.0, 1.0e-6);
+		// 3) Any pose through the validated Phi mapping must be a proper rotation.
+		const FMat3 PoseAxes = ImagePoseCameraLocalAxes(FVector(37.0, 12.0, -8.0), 4, true);
+		const double PoseAxesDet = Mat3Determinant(PoseAxes);
+		const bool bPoseAxesPass = FMath::IsNearlyEqual(PoseAxesDet, 1.0, 1.0e-6);
 
-		// Physical anchors for World = C_scene * M * Obj(target_abs) * M^-1.
+		// Physical anchors for World = C_scene*Phi(target_abs) * (C_thumb*Phi(ref))^-1.
 		auto DualImageWorld = [](const FRotator& SceneCamera, const FVector& TargetPose)
 		{
 			FAssetCandidate Candidate;
+			Candidate.bHasOrientation = true;
+			Candidate.bHasRefPose = true;
+			Candidate.RefOrientationPose = FVector::ZeroVector;
+			Candidate.bHasThumbnailCamera = true;
+			Candidate.ThumbnailCameraRotation = FRotator::ZeroRotator;
 			Candidate.bHasTargetPose = true;
 			Candidate.TargetOrientationPose = TargetPose;
 			FSolverSettings LocalSettings;
 			LocalSettings.OrientMode = ESceneAssemblyOrientMode::DualImage;
 			LocalSettings.ConceptCameraRotation = SceneCamera;
+			LocalSettings.OrientBasisCandidateIndex = 4;
+			LocalSettings.bOrientSwapFrontRight = true;
 			return ResolveDualImageWorldRotationQuat(Candidate, LocalSettings);
 		};
 
-		// 4) Canonical target (0,0,0) with identity camera -> identity world rotation.
+		// 4) Canonical ref/target with identity cameras -> identity after ref correction.
 		const FQuat CanonWorld = DualImageWorld(FRotator::ZeroRotator, FVector::ZeroVector);
 		const bool bCanonicalPass = CanonWorld.Equals(FQuat::Identity, 1.0e-4f);
 
-		// 5) Roll-only target (rotation=90) with identity camera must roll about the
-		// Unreal forward axis (+X), i.e. +Y -> -Z. This distinguishes M=diag(1,-1,1)
-		// from a swap-XY basis, which would instead roll about +Y (a regression guard).
+		// 5) Roll-only target (rotation=90) rolls about Unreal forward (+X): +Y -> +Z.
 		const FQuat RollWorld = DualImageWorld(FRotator::ZeroRotator, FVector(0.0, 0.0, 90.0));
 		const FVector RolledUp = RollWorld.RotateVector(FVector(0.0, 1.0, 0.0));
-		const bool bRollAxisPass = FVector::Dist(RolledUp, FVector(0.0, 0.0, -1.0)) <= 1.0e-3f;
+		const bool bRollAxisPass = FVector::Dist(RolledUp, FVector(0.0, 0.0, 1.0)) <= 1.0e-3f;
 
-		// 6) Canonical target under a yawed scene camera -> world equals the camera
-		// rotation (object sits canonically in the camera observation frame).
+		// 6) Canonical target under a yawed scene camera -> camera rotation, after
+		// removing the identity-camera thumbnail residual.
 		const FRotator YawCamera(0.0, 30.0, 0.0);
 		const FQuat YawWorld = DualImageWorld(YawCamera, FVector::ZeroVector);
 		const bool bCameraComposePass = YawWorld.Equals(YawCamera.Quaternion(), 1.0e-4f);
 
-		bDualImagePass = bColumnConventionPass && bBasisReflectionPass && bConjugationPass
+		bDualImagePass = bColumnConventionPass && bBasisReflectionPass && bCanonAxesPass && bPoseAxesPass
 			&& bCanonicalPass && bRollAxisPass && bCameraComposePass;
 		DualImageDiag = FString::Printf(
-			TEXT("ColumnConv=%d BasisDet=%.6f ConjDet=%.6f Canon=%d RollAxis=%d CamCompose=%d"),
-			bColumnConventionPass ? 1 : 0, BasisDet, PoseUEDet,
+			TEXT("ColumnConv=%d BasisDet=%.6f CanonDet=%.6f PoseDet=%.6f Canon=%d RollAxis=%d CamCompose=%d"),
+			bColumnConventionPass ? 1 : 0, BasisDet, CanonDet, PoseAxesDet,
 			bCanonicalPass ? 1 : 0, bRollAxisPass ? 1 : 0, bCameraComposePass ? 1 : 0);
 	}
 
@@ -1032,19 +1006,17 @@ bool USceneAssemblySolverLibrary::RunSolverSelfTest(float& OutFitIoU, FString& O
 	const bool bPass = OutFitIoU >= 0.999f
 		&& FMath::IsNearlyEqual(Results[0].ScaleFactor, 10.0f, 1.0e-3f)
 		&& bTippedPass
-		&& bOrientedPass
 		&& bDualImagePass;
 	OutMessage = bPass
 		? TEXT("Solver self-test passed.")
 		: FString::Printf(
-			TEXT("Solver self-test failed: UprightIoU=%.6f UprightScale=%.6f TippedIoU=%.6f TippedScale=%.6f TippedUpDot=%.6f TippedBottomError=%.6f OrientedPass=%d DualImage[%s]"),
+			TEXT("Solver self-test failed: UprightIoU=%.6f UprightScale=%.6f TippedIoU=%.6f TippedScale=%.6f TippedUpDot=%.6f TippedBottomError=%.6f DualImage[%s]"),
 			Results[0].FitIoU,
 			Results[0].ScaleFactor,
 			TippedResults[0].FitIoU,
 			TippedResults[0].ScaleFactor,
 			bHasExpectedTippedFrame ? FVector::DotProduct(TippedActorUpAxis, ExpectedTippedFrame.Rotation.GetAxisZ()) : 0.0,
 			bHasExpectedTippedFrame ? FVector::Dist(TippedPlacedBottomCenter, ExpectedTippedFrame.BottomCenter) : 0.0,
-			bOrientedPass ? 1 : 0,
 			*DualImageDiag);
 	return bPass;
 }

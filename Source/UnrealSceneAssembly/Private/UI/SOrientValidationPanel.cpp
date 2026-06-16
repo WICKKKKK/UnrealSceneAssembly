@@ -199,17 +199,22 @@ TSharedRef<FJsonObject> OrientValidationRotatorJson(const FRotator& Value)
 	return Object;
 }
 
-FString OrientValidationJsonObjectToString(const TSharedPtr<FJsonObject>& Object)
+FString OrientValidationPoseToText(const FVector& Pose)
 {
-	if (!Object.IsValid())
-	{
-		return TEXT("");
-	}
+	return FString::Printf(
+		TEXT("azimuth %.3f, polar %.3f, rotation %.3f"),
+		Pose.X,
+		Pose.Y,
+		Pose.Z);
+}
 
-	FString Output;
-	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
-	FJsonSerializer::Serialize(Object.ToSharedRef(), Writer);
-	return Output;
+FString OrientValidationRotatorToText(const FRotator& Rotation)
+{
+	return FString::Printf(
+		TEXT("Pitch %+.3f, Yaw %+.3f, Roll %+.3f"),
+		Rotation.Pitch,
+		Rotation.Yaw,
+		Rotation.Roll);
 }
 
 bool OrientValidationTryGetTimingMs(const TSharedPtr<FJsonObject>& Timings, const TCHAR* FieldName, double& OutValue)
@@ -249,23 +254,17 @@ void OrientValidationCaptureResolution(int32& OutWidth, int32& OutHeight)
 	OutHeight = FMath::Max(16, FMath::RoundToInt(static_cast<float>(SourceHeight) * Scale));
 }
 
-FVector OrientValidationVectorFromJsonArray(const TArray<TSharedPtr<FJsonValue>>* Values, const FVector& Fallback)
+bool OrientValidationPoseFromObject(const TSharedPtr<FJsonObject>& Pose, FVector& OutPose)
 {
-	if (Values == nullptr || Values->Num() != 3)
+	if (!Pose.IsValid())
 	{
-		return Fallback;
+		return false;
 	}
-	return FVector((*Values)[0]->AsNumber(), (*Values)[1]->AsNumber(), (*Values)[2]->AsNumber());
-}
-
-FVector OrientValidationAxisFromObject(const TSharedPtr<FJsonObject>& Axes, const TCHAR* FieldName, const FVector& Fallback)
-{
-	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-	if (!Axes.IsValid() || !Axes->TryGetArrayField(FieldName, Values))
-	{
-		return Fallback;
-	}
-	return OrientValidationVectorFromJsonArray(Values, Fallback);
+	OutPose = FVector(
+		OrientValidationGetNumberField(Pose, TEXT("azimuth"), 0.0),
+		OrientValidationGetNumberField(Pose, TEXT("polar"), OrientValidationGetNumberField(Pose, TEXT("elevation"), 0.0)),
+		OrientValidationGetNumberField(Pose, TEXT("rotation"), 0.0));
+	return true;
 }
 
 FString OrientValidationMeshName(UStaticMesh* Mesh)
@@ -330,7 +329,7 @@ void SOrientValidationPanel::Construct(const FArguments& InArgs)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
 					[
 						SNew(STextBlock)
-						.Text(LOCTEXT("Subtitle", "使用当前场景 RGB 整图和指定 Static Mesh，分别计算 Dual Image / Precomputed 的摆放 Rotation，并可直接 Spawn 到场景中对比。"))
+						.Text(LOCTEXT("Subtitle", "使用当前场景 RGB 整图和指定 Static Mesh，计算 Dual Image 摆放 Rotation，并可直接 Spawn 到场景中验证。"))
 						.ColorAndOpacity(FSlateColor(OrientValidationMutedColor))
 						.AutoWrapText(true)
 					]
@@ -346,6 +345,20 @@ void SOrientValidationPanel::Construct(const FArguments& InArgs)
 							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
 							[
 								SNew(SButton)
+								.Text(LOCTEXT("ComputeSingleImage", "计算单图朝向"))
+								.IsEnabled(this, &SOrientValidationPanel::CanComputeSingleImage)
+								.OnClicked(this, &SOrientValidationPanel::OnComputeSingleImageClicked)
+							]
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
+							[
+								SNew(SButton)
+								.Text(LOCTEXT("SpawnSingleImage", "Spawn 单图结果"))
+								.IsEnabled(this, &SOrientValidationPanel::CanSpawnSingleImage)
+								.OnClicked(this, &SOrientValidationPanel::OnSpawnSingleImageClicked)
+							]
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
+							[
+								SNew(SButton)
 								.Text(LOCTEXT("ComputeDualImage", "计算 Dual Image"))
 								.IsEnabled(this, &SOrientValidationPanel::CanCompute)
 								.OnClicked(this, &SOrientValidationPanel::OnComputeDualImageClicked)
@@ -357,20 +370,6 @@ void SOrientValidationPanel::Construct(const FArguments& InArgs)
 								.IsEnabled(this, &SOrientValidationPanel::CanSpawnDualImage)
 								.OnClicked(this, &SOrientValidationPanel::OnSpawnDualImageClicked)
 							]
-							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("ComputePrecomputed", "计算 Precomputed"))
-								.IsEnabled(this, &SOrientValidationPanel::CanCompute)
-								.OnClicked(this, &SOrientValidationPanel::OnComputePrecomputedClicked)
-							]
-							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("SpawnPrecomputed", "Spawn Precomputed 结果"))
-								.IsEnabled(this, &SOrientValidationPanel::CanSpawnPrecomputed)
-								.OnClicked(this, &SOrientValidationPanel::OnSpawnPrecomputedClicked)
-							]
 							+ SHorizontalBox::Slot().AutoWidth()
 							[
 								SNew(SButton)
@@ -381,13 +380,6 @@ void SOrientValidationPanel::Construct(const FArguments& InArgs)
 						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
 						[
 							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("ComputeSingleImage", "计算单图朝向"))
-								.IsEnabled(this, &SOrientValidationPanel::CanComputeSingleImage)
-								.OnClicked(this, &SOrientValidationPanel::OnComputeSingleImageClicked)
-							]
 							+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 10.0f, 0.0f)
 							[
 								SNew(SButton)
@@ -407,12 +399,6 @@ void SOrientValidationPanel::Construct(const FArguments& InArgs)
 								.Text(LOCTEXT("ClearSingleImageAxes", "清理调试三轴"))
 								.OnClicked(this, &SOrientValidationPanel::OnClearSingleImageAxesClicked)
 							]
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
-						[
-							SNew(STextBlock)
-							.Text(this, &SOrientValidationPanel::GetSingleImageInfoText)
-							.AutoWrapText(true)
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
 						[
@@ -622,7 +608,6 @@ void SOrientValidationPanel::DrawSingleImageAxes(bool bClearExisting)
 	FVector UpWorld = FVector::UpVector;
 	if (bComputeRotation)
 	{
-		SingleImageAxesText.Empty();
 		SingleImageWorldRotation = USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight);
 		const FRotationMatrix RotationMatrix(SingleImageWorldRotation);
 		FrontWorld = RotationMatrix.GetScaledAxis(EAxis::X).GetSafeNormal();
@@ -633,14 +618,39 @@ void SOrientValidationPanel::DrawSingleImageAxes(bool bClearExisting)
 	{
 		USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight, FrontWorld, RightWorld, UpWorld);
 		SingleImageWorldRotation = FRotationMatrix::MakeFromXZ(FrontWorld, UpWorld).Rotator();
-		SingleImageAxesText = BuildAxesText(FrontWorld, RightWorld, UpWorld);
 	}
+	SingleImageAxesText = BuildAxesText(FrontWorld, RightWorld, UpWorld);
 
 	const FVector Origin = FVector::ZeroVector;
 	DrawDebugPoint(World, Origin, OrientValidationSingleImageOriginPointSize, FColor::White, true, -1.0f, SDPG_World);
 	DrawDebugLine(World, Origin, Origin + FrontWorld * OrientValidationSingleImageAxisLength, FColor::Red, true, -1.0f, SDPG_World, 3.0f);
 	DrawDebugLine(World, Origin, Origin + RightWorld * OrientValidationSingleImageAxisLength, FColor::Green, true, -1.0f, SDPG_World, 3.0f);
 	DrawDebugLine(World, Origin, Origin + UpWorld * OrientValidationSingleImageAxisLength, FColor::Blue, true, -1.0f, SDPG_World, 3.0f);
+}
+
+FRotator SOrientValidationPanel::ComputeSingleImageWorldRotationForCurrentDirection() const
+{
+	if (!bHasSingleImageResult || !bHasCaptureCamera)
+	{
+		return FRotator::ZeroRotator;
+	}
+
+	FVector PoseWithOffset = SingleImageOrientPose;
+	PoseWithOffset.X = FMath::Fmod(SingleImageOrientPose.X + GetSingleImageDirectionAzimuthOffset() + 360.0, 360.0);
+
+	const int32 BasisCandidateIndex = GetSingleImageBasisCandidateIndex();
+	const bool bComputeRotation = !Settings.IsValid() || Settings->bSingleImageComputeRotation;
+	const bool bSwapFrontRight = !Settings.IsValid() || Settings->bSingleImageSwapFrontRight;
+	if (bComputeRotation)
+	{
+		return USceneAssemblySolverLibrary::ComputeSingleImageWorldRotation(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight);
+	}
+
+	FVector FrontWorld = FVector::ForwardVector;
+	FVector RightWorld = FVector::RightVector;
+	FVector UpWorld = FVector::UpVector;
+	USceneAssemblySolverLibrary::ComputeSingleImageWorldAxes(PoseWithOffset, CaptureCameraRotation, BasisCandidateIndex, bSwapFrontRight, FrontWorld, RightWorld, UpWorld);
+	return FRotationMatrix::MakeFromXZ(FrontWorld, UpWorld).Rotator();
 }
 
 void SOrientValidationPanel::DrawRotationResultAxes(const FComputedRotation& RotationResult, const FString& Label, bool bClearExisting)
@@ -665,16 +675,42 @@ void SOrientValidationPanel::DrawRotationResultAxes(const FComputedRotation& Rot
 	{
 		DualImageAxesText = AxesText;
 	}
-	else if (Label.Equals(TEXT("Precomputed"), ESearchCase::IgnoreCase))
-	{
-		PrecomputedAxesText = AxesText;
-	}
 
 	const FVector Origin = FVector::ZeroVector;
 	DrawDebugPoint(World, Origin, OrientValidationSingleImageOriginPointSize, FColor::White, true, -1.0f, SDPG_World);
 	DrawDebugLine(World, Origin, Origin + FrontWorld * OrientValidationSingleImageAxisLength, FColor::Red, true, -1.0f, SDPG_World, 2.0f);
 	DrawDebugLine(World, Origin, Origin + RightWorld * OrientValidationSingleImageAxisLength, FColor::Green, true, -1.0f, SDPG_World, 2.0f);
 	DrawDebugLine(World, Origin, Origin + UpWorld * OrientValidationSingleImageAxisLength, FColor::Blue, true, -1.0f, SDPG_World, 2.0f);
+}
+
+void SOrientValidationPanel::DrawActiveAxes(bool bClearExisting)
+{
+	if (ActiveResult == EActiveOrientResult::SingleImage)
+	{
+		DrawSingleImageAxes(bClearExisting);
+		return;
+	}
+	if (ActiveResult == EActiveOrientResult::DualImage)
+	{
+		SyncDualImageSelectedBranch();
+		DrawRotationResultAxes(DualImageResult, TEXT("Dual Image"), bClearExisting);
+	}
+}
+
+void SOrientValidationPanel::SyncDualImageSelectedBranch()
+{
+	if (!DualImageResult.bValid || DualImageResult.BranchRotations.IsEmpty())
+	{
+		DualImageDirectionIndex = 0;
+		return;
+	}
+
+	DualImageDirectionIndex = FMath::Clamp(DualImageDirectionIndex, 0, DualImageResult.BranchRotations.Num() - 1);
+	DualImageResult.WorldRotation = DualImageResult.BranchRotations[DualImageDirectionIndex];
+	DualImageResult.TargetOrientPose = DualImageResult.BranchTargetOrientPoses.IsValidIndex(DualImageDirectionIndex)
+		? DualImageResult.BranchTargetOrientPoses[DualImageDirectionIndex]
+		: FVector::ZeroVector;
+	DualImageResult.bHasTargetOrientPose = DualImageResult.BranchTargetOrientPoses.IsValidIndex(DualImageDirectionIndex);
 }
 
 void SOrientValidationPanel::OnSettingsFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)
@@ -689,20 +725,22 @@ void SOrientValidationPanel::OnSettingsFinishedChangingProperties(const FPropert
 		PropertyName == GET_MEMBER_NAME_CHECKED(UOrientValidationSettings, bSingleImageFlipColumn2);
 	if (bChangedSingleImageSettings)
 	{
-		RefreshSingleImageAxesForCurrentSettings();
+		if (DualImageResult.bValid)
+		{
+			RecomputeDualImageResultForCurrentSettings(false);
+		}
+		const bool bRedrewAxes = CanDrawActiveAxes();
+		if (bRedrewAxes)
+		{
+			DrawActiveAxes(true);
+		}
+		if (bRedrewAxes || DualImageResult.bValid || bHasSingleImageResult)
+		{
+			UpdateSettingsResults();
+			LastResult = bRedrewAxes ? TEXT("朝向参数已更新，已自动重绘当前结果的世界三轴。 ") : TEXT("朝向参数已更新。 ");
+			AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
+		}
 	}
-}
-
-void SOrientValidationPanel::RefreshSingleImageAxesForCurrentSettings()
-{
-	if (!CanDrawSingleImageAxes())
-	{
-		return;
-	}
-
-	DrawSingleImageAxes(true);
-	LastResult = TEXT("单图朝向参数已更新，已自动重绘世界三轴。 ");
-	AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
 }
 
 int32 SOrientValidationPanel::GetSingleImageDirectionCount() const
@@ -723,6 +761,18 @@ double SOrientValidationPanel::GetSingleImageDirectionAzimuthOffset() const
 	const int32 DirectionCount = FMath::Max(1, GetSingleImageDirectionCount());
 	const int32 DirectionIndex = FMath::Clamp(SingleImageDirectionIndex, 0, DirectionCount - 1);
 	return 360.0 * static_cast<double>(DirectionIndex) / static_cast<double>(DirectionCount);
+}
+
+int32 SOrientValidationPanel::GetDualImageDirectionCount() const
+{
+	return FMath::Max(1, DualImageResult.BranchRotations.Num());
+}
+
+int32 SOrientValidationPanel::GetDualImageAzimuthOffset() const
+{
+	return DualImageResult.BranchAzimuthOffsets.IsValidIndex(DualImageDirectionIndex)
+		? DualImageResult.BranchAzimuthOffsets[DualImageDirectionIndex]
+		: 0;
 }
 
 bool SOrientValidationPanel::ComputeRotation(const TCHAR* ControllerFunctionName, const FText& ModeLabel, FComputedRotation& OutRotation)
@@ -762,29 +812,46 @@ bool SOrientValidationPanel::ComputeRotation(const TCHAR* ControllerFunctionName
 
 bool SOrientValidationPanel::ApplyRotationResponse(const TSharedPtr<FJsonObject>& Response, FComputedRotation& OutRotation)
 {
-	const TSharedPtr<FJsonObject> RelativeAxes = OrientValidationGetObjectField(Response, TEXT("relative_orientation_axes"));
+	OutRotation = FComputedRotation();
 	const TSharedPtr<FJsonObject> ThumbnailCameraObject = OrientValidationGetObjectField(Response, TEXT("thumbnail_camera"));
-	const TSharedPtr<FJsonObject> RelativePose = OrientValidationGetObjectField(Response, TEXT("relative_orientation"));
+	const TSharedPtr<FJsonObject> RefPose = OrientValidationGetObjectField(Response, TEXT("ref_pose"));
 
 	const FString Mode = OrientValidationGetStringField(Response, TEXT("mode"));
 	const bool bIsDualImage = Mode.Equals(TEXT("DualImage"), ESearchCase::IgnoreCase);
+	if (!bIsDualImage)
+	{
+		return false;
+	}
 
 	// Shared thumbnail camera (asset-local space) for all branches.
-	FRotator ThumbnailCameraRotation = FRotator::ZeroRotator;
+	FRotator ThumbnailCameraRotation = USceneAssemblySolverLibrary::GetDefaultThumbnailCameraRotation();
 	const bool bHasThumbnailCamera = ThumbnailCameraObject.IsValid() && OrientValidationJsonRotator(ThumbnailCameraObject, ThumbnailCameraRotation);
+	FVector RefOrientPose = FVector::ZeroVector;
+	const bool bHasRefPose = OrientValidationPoseFromObject(RefPose, RefOrientPose);
+	if (!bHasRefPose)
+	{
+		return false;
+	}
 
 	FSolverSettings SolverSettings;
-	SolverSettings.OrientMode = bIsDualImage ? ESceneAssemblyOrientMode::DualImage : ESceneAssemblyOrientMode::Precomputed;
+	SolverSettings.OrientMode = ESceneAssemblyOrientMode::DualImage;
 	SolverSettings.ConceptCameraRotation = CaptureCameraRotation;
+	SolverSettings.OrientBasisCandidateIndex = GetSingleImageBasisCandidateIndex();
+	SolverSettings.bOrientSwapFrontRight = !Settings.IsValid() || Settings->bSingleImageSwapFrontRight;
 
 	OutRotation.BranchRotations.Reset();
 	OutRotation.BranchAzimuthOffsets.Reset();
+	OutRotation.BranchTargetOrientPoses.Reset();
+	OutRotation.bHasRefOrientPose = bHasRefPose;
+	OutRotation.RefOrientPose = RefOrientPose;
+	OutRotation.bHasThumbnailCamera = bHasThumbnailCamera;
+	OutRotation.ThumbnailCameraRotation = ThumbnailCameraRotation;
+	OutRotation.bHasTargetOrientPose = false;
 
-	// Dual Image: rebuild geometry in C++ from the raw Orient relative pose, and
-	// enumerate the symmetry branches (azimuth offsets) so the user can pick the
-	// branch matching the concept art.
+	// Dual Image: rebuild both ref/target through the validated single-image basis,
+	// then enumerate symmetry branches so the user can pick the one matching the concept art.
 	const TArray<TSharedPtr<FJsonValue>>* Branches = nullptr;
-	if (bIsDualImage && Response.IsValid() && Response->TryGetArrayField(TEXT("branches"), Branches) && Branches != nullptr)
+	if (Response.IsValid() && Response->TryGetArrayField(TEXT("branches"), Branches) && Branches != nullptr)
 	{
 		for (const TSharedPtr<FJsonValue>& BranchValue : *Branches)
 		{
@@ -799,30 +866,33 @@ bool SOrientValidationPanel::ApplyRotationResponse(const TSharedPtr<FJsonObject>
 				continue;
 			}
 
+			FVector TargetOrientPose = FVector::ZeroVector;
+			if (!OrientValidationPoseFromObject(BranchPose, TargetOrientPose))
+			{
+				continue;
+			}
+
 			FAssetCandidate Candidate;
 			Candidate.AssetPath = GetTargetMeshAssetPath();
 			Candidate.BboxCenter = FVector::ZeroVector;
 			Candidate.BboxHalfExtents = FVector::OneVector;
 			Candidate.SemanticScore = 1.0f;
 			Candidate.bHasOrientation = true;
-			// Dual Image: feed the model's absolute target_abs pose straight to the
-			// solver, which maps it to the Unreal world frame via
-			// World = C_scene * M * Obj(target) * M^-1 (no thumbnail camera needed).
+			Candidate.bHasRefPose = bHasRefPose;
+			Candidate.RefOrientationPose = RefOrientPose;
 			Candidate.bHasTargetPose = true;
-			Candidate.TargetOrientationPose = FVector(
-				OrientValidationGetNumberField(BranchPose, TEXT("azimuth"), 0.0),
-				OrientValidationGetNumberField(BranchPose, TEXT("polar"), 0.0),
-				OrientValidationGetNumberField(BranchPose, TEXT("rotation"), 0.0));
+			Candidate.TargetOrientationPose = TargetOrientPose;
 			Candidate.bHasThumbnailCamera = bHasThumbnailCamera;
 			Candidate.ThumbnailCameraRotation = ThumbnailCameraRotation;
 
 			const FRotator BranchWorld = USceneAssemblySolverLibrary::ResolveImageOrientationWorldRotation(Candidate, SolverSettings);
 			OutRotation.BranchRotations.Add(BranchWorld);
 			OutRotation.BranchAzimuthOffsets.Add(OrientValidationGetIntField(Branch, TEXT("azimuth_offset"), 0));
+			OutRotation.BranchTargetOrientPoses.Add(TargetOrientPose);
 		}
 	}
 
-	if (bIsDualImage && OutRotation.BranchRotations.Num() > 0)
+	if (OutRotation.BranchRotations.Num() > 0)
 	{
 		// Primary world rotation = branch with azimuth offset 0 (or first branch).
 		int32 PrimaryIndex = OutRotation.BranchAzimuthOffsets.IndexOfByKey(0);
@@ -830,9 +900,14 @@ bool SOrientValidationPanel::ApplyRotationResponse(const TSharedPtr<FJsonObject>
 		{
 			PrimaryIndex = 0;
 		}
+		if (!OutRotation.BranchRotations.IsValidIndex(PrimaryIndex))
+		{
+			return false;
+		}
+		DualImageDirectionIndex = PrimaryIndex;
 		OutRotation.WorldRotation = OutRotation.BranchRotations[PrimaryIndex];
-		OutRotation.RelativePoseText = OrientValidationJsonObjectToString(RelativePose);
-
+		OutRotation.TargetOrientPose = OutRotation.BranchTargetOrientPoses.IsValidIndex(PrimaryIndex) ? OutRotation.BranchTargetOrientPoses[PrimaryIndex] : FVector::ZeroVector;
+		OutRotation.bHasTargetOrientPose = true;
 		FString BranchSummary;
 		for (int32 i = 0; i < OutRotation.BranchRotations.Num(); ++i)
 		{
@@ -842,47 +917,130 @@ bool SOrientValidationPanel::ApplyRotationResponse(const TSharedPtr<FJsonObject>
 				OutRotation.BranchAzimuthOffsets[i], R.Pitch, R.Yaw, R.Roll);
 		}
 		OutRotation.MetadataText = FString::Printf(
-			TEXT("资产：%s\n相机：Pitch %.3f, Yaw %.3f, Roll %.3f\nRelative Pose：%s\n对称分支（共 %d 个，请对照原画挑选）：%s"),
+			TEXT("资产：%s\n场景相机：Pitch %.3f, Yaw %.3f, Roll %.3f\n缩略图相机：Pitch %.3f, Yaw %.3f, Roll %.3f%s\nRef Pose：azimuth %.3f, polar %.3f, rotation %.3f\nTarget Pose：azimuth %.3f, polar %.3f, rotation %.3f\n对称分支（共 %d 个，请对照原画挑选）：%s"),
 			*GetTargetMeshAssetPath(),
 			CaptureCameraRotation.Pitch,
 			CaptureCameraRotation.Yaw,
 			CaptureCameraRotation.Roll,
-			*OutRotation.RelativePoseText,
+			ThumbnailCameraRotation.Pitch,
+			ThumbnailCameraRotation.Yaw,
+			ThumbnailCameraRotation.Roll,
+			bHasThumbnailCamera ? TEXT("") : TEXT("（默认回退）"),
+			RefOrientPose.X,
+			RefOrientPose.Y,
+			RefOrientPose.Z,
+			OutRotation.TargetOrientPose.X,
+			OutRotation.TargetOrientPose.Y,
+			OutRotation.TargetOrientPose.Z,
 			OutRotation.BranchRotations.Num(),
 			*BranchSummary);
 		OutRotation.bValid = true;
 		return true;
 	}
+	return false;
+}
 
-	// Precomputed (or DualImage without branches): use the pre-baked axis vectors.
-	if (!RelativeAxes.IsValid())
+void SOrientValidationPanel::RecomputeDualImageResultForCurrentSettings(bool bRedrawAxes)
+{
+	if (!DualImageResult.bValid || !DualImageResult.bHasRefOrientPose || DualImageResult.BranchTargetOrientPoses.IsEmpty())
 	{
-		return false;
+		return;
 	}
 
-	FAssetCandidate Candidate;
-	Candidate.AssetPath = GetTargetMeshAssetPath();
-	Candidate.BboxCenter = FVector::ZeroVector;
-	Candidate.BboxHalfExtents = FVector::OneVector;
-	Candidate.SemanticScore = 1.0f;
-	Candidate.bHasOrientation = true;
-	Candidate.RelativeOrientationX = OrientValidationAxisFromObject(RelativeAxes, TEXT("x"), FVector::ForwardVector);
-	Candidate.RelativeOrientationY = OrientValidationAxisFromObject(RelativeAxes, TEXT("y"), FVector::RightVector);
-	Candidate.RelativeOrientationZ = OrientValidationAxisFromObject(RelativeAxes, TEXT("z"), FVector::UpVector);
-	Candidate.bHasThumbnailCamera = bHasThumbnailCamera;
-	Candidate.ThumbnailCameraRotation = ThumbnailCameraRotation;
+	FSolverSettings SolverSettings;
+	SolverSettings.OrientMode = ESceneAssemblyOrientMode::DualImage;
+	SolverSettings.ConceptCameraRotation = CaptureCameraRotation;
+	SolverSettings.OrientBasisCandidateIndex = GetSingleImageBasisCandidateIndex();
+	SolverSettings.bOrientSwapFrontRight = !Settings.IsValid() || Settings->bSingleImageSwapFrontRight;
 
-	OutRotation.WorldRotation = USceneAssemblySolverLibrary::ResolveImageOrientationWorldRotation(Candidate, SolverSettings);
-	OutRotation.RelativePoseText = OrientValidationJsonObjectToString(RelativePose);
-	OutRotation.MetadataText = FString::Printf(
-		TEXT("资产：%s\n相机：Pitch %.3f, Yaw %.3f, Roll %.3f\nRelative Pose：%s"),
-		*GetTargetMeshAssetPath(),
-		CaptureCameraRotation.Pitch,
-		CaptureCameraRotation.Yaw,
-		CaptureCameraRotation.Roll,
-		*OutRotation.RelativePoseText);
-	OutRotation.bValid = true;
-	return true;
+	DualImageResult.BranchRotations.Reset();
+	for (const FVector& TargetPose : DualImageResult.BranchTargetOrientPoses)
+	{
+		FAssetCandidate Candidate;
+		Candidate.AssetPath = GetTargetMeshAssetPath();
+		Candidate.BboxCenter = FVector::ZeroVector;
+		Candidate.BboxHalfExtents = FVector::OneVector;
+		Candidate.SemanticScore = 1.0f;
+		Candidate.bHasOrientation = true;
+		Candidate.bHasRefPose = true;
+		Candidate.RefOrientationPose = DualImageResult.RefOrientPose;
+		Candidate.bHasTargetPose = true;
+		Candidate.TargetOrientationPose = TargetPose;
+		Candidate.bHasThumbnailCamera = DualImageResult.bHasThumbnailCamera;
+		Candidate.ThumbnailCameraRotation = DualImageResult.ThumbnailCameraRotation;
+		DualImageResult.BranchRotations.Add(USceneAssemblySolverLibrary::ResolveImageOrientationWorldRotation(Candidate, SolverSettings));
+	}
+
+	SyncDualImageSelectedBranch();
+	if (bRedrawAxes)
+	{
+		DrawRotationResultAxes(DualImageResult, TEXT("Dual Image"), true);
+	}
+
+	FString BranchSummary;
+	for (int32 i = 0; i < DualImageResult.BranchRotations.Num(); ++i)
+	{
+		const FRotator& R = DualImageResult.BranchRotations[i];
+		BranchSummary += FString::Printf(
+			TEXT("\n  [az+%d] Pitch %.3f, Yaw %.3f, Roll %.3f"),
+			DualImageResult.BranchAzimuthOffsets.IsValidIndex(i) ? DualImageResult.BranchAzimuthOffsets[i] : 0,
+			R.Pitch,
+			R.Yaw,
+			R.Roll);
+	}
+	DualImageResult.MetadataText = FString::Printf(
+		TEXT("已使用当前 M_basis 重算 Dual Image。\nRef Pose：azimuth %.3f, polar %.3f, rotation %.3f\nTarget Pose：azimuth %.3f, polar %.3f, rotation %.3f\n对称分支：%s"),
+		DualImageResult.RefOrientPose.X,
+		DualImageResult.RefOrientPose.Y,
+		DualImageResult.RefOrientPose.Z,
+		DualImageResult.TargetOrientPose.X,
+		DualImageResult.TargetOrientPose.Y,
+		DualImageResult.TargetOrientPose.Z,
+		*BranchSummary);
+}
+
+FString SOrientValidationPanel::BuildSingleImageStatusText() const
+{
+	if (!bHasSingleImageResult)
+	{
+		return TEXT("尚未计算。");
+	}
+
+	FString Status = FString::Printf(
+		TEXT("已计算。\nDirection [%d/%d]（azimuth 偏移 +%.0f°）\nWorld Rotation：%s"),
+		SingleImageDirectionIndex + 1,
+		FMath::Max(1, GetSingleImageDirectionCount()),
+		GetSingleImageDirectionAzimuthOffset(),
+		*OrientValidationRotatorToText(SingleImageWorldRotation));
+	if (!SingleImageAxesText.IsEmpty())
+	{
+		Status += TEXT("\n三轴：\n") + SingleImageAxesText;
+	}
+	if (SingleImageNumDirections != 1)
+	{
+		Status += FString::Printf(TEXT("\n注意：num_directions=%d，模型认为该目标可能存在多解或不明确朝向。"), SingleImageNumDirections);
+	}
+	return Status;
+}
+
+FString SOrientValidationPanel::BuildDualImageStatusText() const
+{
+	if (!DualImageResult.bValid)
+	{
+		return TEXT("尚未计算。");
+	}
+
+	FString Status = FString::Printf(
+		TEXT("已计算。\nDirection [%d/%d]（azimuth 偏移 +%d°）\nWorld Rotation：%s"),
+		FMath::Clamp(DualImageDirectionIndex, 0, GetDualImageDirectionCount() - 1) + 1,
+		GetDualImageDirectionCount(),
+		GetDualImageAzimuthOffset(),
+		*OrientValidationRotatorToText(DualImageResult.WorldRotation));
+	if (!DualImageAxesText.IsEmpty())
+	{
+		Status += TEXT("\n三轴：\n") + DualImageAxesText;
+	}
+	return Status;
 }
 
 FString SOrientValidationPanel::BuildTimingReport(const TSharedPtr<FJsonObject>& Response, const FText& ModeLabel, double RoundTripMs) const
@@ -914,16 +1072,17 @@ void SOrientValidationPanel::UpdateSettingsResults()
 		return;
 	}
 
+	Settings->SingleImageWorldRotation = SingleImageWorldRotation;
+	Settings->SingleImageOrientPose = bHasSingleImageResult
+		? FString::Printf(TEXT("%s, num_directions %d"), *OrientValidationPoseToText(SingleImageOrientPose), SingleImageNumDirections)
+		: TEXT("");
+	Settings->SingleImageStatus = BuildSingleImageStatusText();
+
+	SyncDualImageSelectedBranch();
 	Settings->DualImageWorldRotation = DualImageResult.WorldRotation;
-	Settings->DualImageRelativePose = DualImageResult.RelativePoseText;
-	Settings->DualImageStatus = DualImageResult.bValid
-		? FString::Printf(TEXT("已计算。\n%s"), *DualImageAxesText)
-		: TEXT("尚未计算。");
-	Settings->PrecomputedWorldRotation = PrecomputedResult.WorldRotation;
-	Settings->PrecomputedRelativePose = PrecomputedResult.RelativePoseText;
-	Settings->PrecomputedStatus = PrecomputedResult.bValid
-		? FString::Printf(TEXT("已计算。\n%s"), *PrecomputedAxesText)
-		: TEXT("尚未计算。");
+	Settings->DualImageRefPose = DualImageResult.bHasRefOrientPose ? OrientValidationPoseToText(DualImageResult.RefOrientPose) : TEXT("");
+	Settings->DualImageTargetPose = DualImageResult.bHasTargetOrientPose ? OrientValidationPoseToText(DualImageResult.TargetOrientPose) : TEXT("");
+	Settings->DualImageStatus = BuildDualImageStatusText();
 	if (SettingsDetailsView.IsValid())
 	{
 		SettingsDetailsView->ForceRefresh();
@@ -1036,56 +1195,19 @@ AActor* SOrientValidationPanel::SpawnResultActor(const FComputedRotation& Rotati
 		return nullptr;
 	}
 
-	// Spawn every symmetry branch (if any), laid out along the X axis, so the user
-	// can visually compare each candidate orientation against the concept art.
-	// Falls back to a single actor at WorldRotation when there are no branches.
-	struct FBranchSpawn
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Name = MakeUniqueObjectName(World, AStaticMeshActor::StaticClass(), FName(*FString::Printf(TEXT("OrientValidation_%s"), *LabelSuffix)));
+	AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, RotationResult.WorldRotation, SpawnParameters);
+	if (!Actor)
 	{
-		FRotator Rotation;
-		int32 AzimuthOffset;
-	};
-	TArray<FBranchSpawn> BranchSpawns;
-	if (RotationResult.BranchRotations.Num() > 0)
-	{
-		for (int32 i = 0; i < RotationResult.BranchRotations.Num(); ++i)
-		{
-			const int32 Offset = RotationResult.BranchAzimuthOffsets.IsValidIndex(i) ? RotationResult.BranchAzimuthOffsets[i] : 0;
-			BranchSpawns.Add({RotationResult.BranchRotations[i], Offset});
-		}
-	}
-	else
-	{
-		BranchSpawns.Add({RotationResult.WorldRotation, 0});
+		return nullptr;
 	}
 
-	AActor* FirstActor = nullptr;
-	const double BranchSpacing = 200.0;
-	for (int32 i = 0; i < BranchSpawns.Num(); ++i)
-	{
-		const FBranchSpawn& BranchSpawn = BranchSpawns[i];
-		const FVector BranchLocation = Location + FVector(static_cast<double>(i) * BranchSpacing, 0.0, 0.0);
-		const FString BranchSuffix = BranchSpawns.Num() > 1
-			? FString::Printf(TEXT("%s_az%d"), *LabelSuffix, BranchSpawn.AzimuthOffset)
-			: LabelSuffix;
-
-		FActorSpawnParameters SpawnParameters;
-		SpawnParameters.Name = MakeUniqueObjectName(World, AStaticMeshActor::StaticClass(), FName(*FString::Printf(TEXT("OrientValidation_%s"), *BranchSuffix)));
-		AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BranchLocation, BranchSpawn.Rotation, SpawnParameters);
-		if (!Actor)
-		{
-			continue;
-		}
-
-		Actor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
-		Actor->SetActorScale3D(FVector::OneVector);
-		Actor->Tags.AddUnique(OrientValidationResultTag);
-		Actor->SetActorLabel(FString::Printf(TEXT("OrientValidation_%s_%s"), *BranchSuffix, *GetTargetMeshName()));
-		if (!FirstActor)
-		{
-			FirstActor = Actor;
-		}
-	}
-	return FirstActor;
+	Actor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+	Actor->SetActorScale3D(FVector::OneVector);
+	Actor->Tags.AddUnique(OrientValidationResultTag);
+	Actor->SetActorLabel(FString::Printf(TEXT("OrientValidation_%s_%s"), *LabelSuffix, *GetTargetMeshName()));
+	return Actor;
 }
 
 FReply SOrientValidationPanel::OnCaptureSceneClicked()
@@ -1109,9 +1231,9 @@ FReply SOrientValidationPanel::OnCaptureSceneClicked()
 	LoadCaptureMetadataFromJson();
 	RefreshSceneBrush();
 	DualImageResult = FComputedRotation();
-	PrecomputedResult = FComputedRotation();
+	ActiveResult = EActiveOrientResult::None;
+	DualImageDirectionIndex = 0;
 	DualImageAxesText.Empty();
-	PrecomputedAxesText.Empty();
 	bHasSingleImageResult = false;
 	SingleImageOrientPose = FVector::ZeroVector;
 	SingleImageNumDirections = 1;
@@ -1152,18 +1274,8 @@ FReply SOrientValidationPanel::OnComputeDualImageClicked()
 	DualImageAxesText.Empty();
 	if (ComputeRotation(TEXT("compute_dual_image_rotation_json"), LOCTEXT("DualImageLabel", "Dual Image"), DualImageResult))
 	{
-		DrawRotationResultAxes(DualImageResult, TEXT("Dual Image"), true);
-		UpdateSettingsResults();
-	}
-	return FReply::Handled();
-}
-
-FReply SOrientValidationPanel::OnComputePrecomputedClicked()
-{
-	PrecomputedAxesText.Empty();
-	if (ComputeRotation(TEXT("compute_precomputed_rotation_json"), LOCTEXT("PrecomputedLabel", "Precomputed"), PrecomputedResult))
-	{
-		DrawRotationResultAxes(PrecomputedResult, TEXT("Precomputed"), true);
+		ActiveResult = EActiveOrientResult::DualImage;
+		DrawActiveAxes(true);
 		UpdateSettingsResults();
 	}
 	return FReply::Handled();
@@ -1195,6 +1307,10 @@ FReply SOrientValidationPanel::OnComputeSingleImageClicked()
 	if (!OrientPose.IsValid())
 	{
 		bHasSingleImageResult = false;
+		if (ActiveResult == EActiveOrientResult::SingleImage)
+		{
+			ActiveResult = EActiveOrientResult::None;
+		}
 		LastResult = TEXT("单图朝向响应缺少 orient_pose。 ");
 		AppendLog(LastResult);
 		return FReply::Handled();
@@ -1209,8 +1325,10 @@ FReply SOrientValidationPanel::OnComputeSingleImageClicked()
 	SingleImageWorldRotation = FRotator::ZeroRotator;
 	SingleImageAxesText.Empty();
 	bHasSingleImageResult = true;
+	ActiveResult = EActiveOrientResult::SingleImage;
 
-	DrawSingleImageAxes(true);
+	DrawActiveAxes(true);
+	UpdateSettingsResults();
 
 	LastResult = TEXT("单图朝向计算完成，已绘制世界三轴。 ");
 	FString SymmetryHint;
@@ -1224,29 +1342,55 @@ FReply SOrientValidationPanel::OnComputeSingleImageClicked()
 
 FReply SOrientValidationPanel::OnDrawSingleImageAxesClicked()
 {
-	DrawSingleImageAxes(true);
-	LastResult = TEXT("已绘制单图朝向世界三轴。 ");
+	if (!CanDrawActiveAxes())
+	{
+		LastResult = TEXT("尚无可绘制的朝向结果。");
+		AppendLog(LastResult);
+		return FReply::Handled();
+	}
+
+	DrawActiveAxes(true);
+	UpdateSettingsResults();
+	LastResult = ActiveResult == EActiveOrientResult::DualImage
+		? TEXT("已绘制 Dual Image 世界三轴。 ")
+		: TEXT("已绘制单图朝向世界三轴。 ");
 	AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
 	return FReply::Handled();
 }
 
 FReply SOrientValidationPanel::OnCycleSingleImageDirectionClicked()
 {
-	if (!bHasSingleImageResult)
+	if (ActiveResult == EActiveOrientResult::SingleImage)
 	{
-		LastResult = TEXT("尚未计算单图朝向，无法切换 Direction。 ");
-		AppendLog(LastResult);
+		if (!bHasSingleImageResult)
+		{
+			LastResult = TEXT("尚未计算单图朝向，无法切换 Direction。 ");
+			AppendLog(LastResult);
+			return FReply::Handled();
+		}
+
+		const int32 DirectionCount = FMath::Max(1, GetSingleImageDirectionCount());
+		SingleImageDirectionIndex = (SingleImageDirectionIndex + 1) % DirectionCount;
+		DrawActiveAxes(true);
+		UpdateSettingsResults();
+		LastResult = FString::Printf(TEXT("已切换单图朝向 Direction [%d/%d]。"), SingleImageDirectionIndex + 1, DirectionCount);
+		AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
 		return FReply::Handled();
 	}
 
-	const int32 DirectionCount = FMath::Max(1, GetSingleImageDirectionCount());
-	SingleImageDirectionIndex = (SingleImageDirectionIndex + 1) % DirectionCount;
-	if (CanDrawSingleImageAxes())
+	if (ActiveResult == EActiveOrientResult::DualImage && DualImageResult.bValid)
 	{
-		DrawSingleImageAxes(true);
+		const int32 DirectionCount = GetDualImageDirectionCount();
+		DualImageDirectionIndex = (DualImageDirectionIndex + 1) % DirectionCount;
+		DrawActiveAxes(true);
+		UpdateSettingsResults();
+		LastResult = FString::Printf(TEXT("已切换 Dual Image Direction [%d/%d]（azimuth 偏移 +%d°）。"), DualImageDirectionIndex + 1, DirectionCount, GetDualImageAzimuthOffset());
+		AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
+		return FReply::Handled();
 	}
-	LastResult = FString::Printf(TEXT("已切换到 Direction [%d/%d]。"), SingleImageDirectionIndex + 1, DirectionCount);
-	AppendLog(FString::Printf(TEXT("%s\n%s"), *LastResult, *GetSingleImageInfoText().ToString()));
+
+	LastResult = TEXT("尚无可切换的朝向结果。");
+	AppendLog(LastResult);
 	return FReply::Handled();
 }
 
@@ -1262,20 +1406,25 @@ FReply SOrientValidationPanel::OnClearSingleImageAxesClicked()
 	return FReply::Handled();
 }
 
-FReply SOrientValidationPanel::OnSpawnDualImageClicked()
+FReply SOrientValidationPanel::OnSpawnSingleImageClicked()
 {
-	const FScopedTransaction Transaction(LOCTEXT("SpawnDualImageTransaction", "Scene Assembly: Spawn Dual Image Orient Validation"));
-	AActor* Actor = SpawnResultActor(DualImageResult, TEXT("DualImage"), FVector(-150.0, 0.0, 0.0));
-	LastResult = Actor ? TEXT("已 Spawn Dual Image 结果到场景。") : TEXT("Spawn Dual Image 结果失败。");
+	FComputedRotation SingleImageResult;
+	SingleImageResult.bValid = bHasSingleImageResult;
+	SingleImageResult.WorldRotation = ComputeSingleImageWorldRotationForCurrentDirection();
+
+	const FScopedTransaction Transaction(LOCTEXT("SpawnSingleImageTransaction", "Scene Assembly: Spawn Single Image Orient Validation"));
+	AActor* Actor = SpawnResultActor(SingleImageResult, TEXT("SingleImage"), FVector::ZeroVector);
+	LastResult = Actor ? TEXT("已 Spawn 单图结果到场景。") : TEXT("Spawn 单图结果失败。 ");
 	AppendLog(LastResult);
 	return FReply::Handled();
 }
 
-FReply SOrientValidationPanel::OnSpawnPrecomputedClicked()
+FReply SOrientValidationPanel::OnSpawnDualImageClicked()
 {
-	const FScopedTransaction Transaction(LOCTEXT("SpawnPrecomputedTransaction", "Scene Assembly: Spawn Precomputed Orient Validation"));
-	AActor* Actor = SpawnResultActor(PrecomputedResult, TEXT("Precomputed"), FVector(150.0, 0.0, 0.0));
-	LastResult = Actor ? TEXT("已 Spawn Precomputed 结果到场景。") : TEXT("Spawn Precomputed 结果失败。");
+	SyncDualImageSelectedBranch();
+	const FScopedTransaction Transaction(LOCTEXT("SpawnDualImageTransaction", "Scene Assembly: Spawn Dual Image Orient Validation"));
+	AActor* Actor = SpawnResultActor(DualImageResult, TEXT("DualImage"), FVector::ZeroVector);
+	LastResult = Actor ? TEXT("已 Spawn Dual Image 结果到场景。") : TEXT("Spawn Dual Image 结果失败。");
 	AppendLog(LastResult);
 	return FReply::Handled();
 }
@@ -1378,13 +1527,19 @@ FText SOrientValidationPanel::GetSingleImageInfoText() const
 	{
 		Text += TEXT("\n注意：num_directions 非 1，模型输出可能存在对称多解或无明确朝向。");
 	}
-	if (!DualImageAxesText.IsEmpty())
+	if (DualImageResult.bValid)
 	{
-		Text += TEXT("\n\nDual Image 三轴：\n") + DualImageAxesText;
-	}
-	if (!PrecomputedAxesText.IsEmpty())
-	{
-		Text += TEXT("\n\nPrecomputed 三轴：\n") + PrecomputedAxesText;
+		Text += FString::Printf(
+			TEXT("\n\nDual Image Direction：[%d/%d]（azimuth 偏移 +%d°）\nRef Pose：%s\nTarget Pose：%s"),
+			FMath::Clamp(DualImageDirectionIndex, 0, GetDualImageDirectionCount() - 1) + 1,
+			GetDualImageDirectionCount(),
+			GetDualImageAzimuthOffset(),
+			*OrientValidationPoseToText(DualImageResult.RefOrientPose),
+			*OrientValidationPoseToText(DualImageResult.TargetOrientPose));
+		if (!DualImageAxesText.IsEmpty())
+		{
+			Text += TEXT("\nDual Image 三轴：\n") + DualImageAxesText;
+		}
 	}
 	return FText::FromString(Text);
 }
@@ -1426,17 +1581,34 @@ bool SOrientValidationPanel::CanComputeSingleImage() const
 
 bool SOrientValidationPanel::CanDrawSingleImageAxes() const
 {
-	return bHasSingleImageResult && bHasCaptureCamera;
+	return CanDrawActiveAxes();
+}
+
+bool SOrientValidationPanel::CanDrawActiveAxes() const
+{
+	if (!bHasCaptureCamera)
+	{
+		return false;
+	}
+	if (ActiveResult == EActiveOrientResult::SingleImage)
+	{
+		return bHasSingleImageResult;
+	}
+	if (ActiveResult == EActiveOrientResult::DualImage)
+	{
+		return DualImageResult.bValid;
+	}
+	return false;
+}
+
+bool SOrientValidationPanel::CanSpawnSingleImage() const
+{
+	return bHasSingleImageResult && Settings.IsValid() && Settings->TargetMesh != nullptr;
 }
 
 bool SOrientValidationPanel::CanSpawnDualImage() const
 {
 	return DualImageResult.bValid && Settings.IsValid() && Settings->TargetMesh != nullptr;
-}
-
-bool SOrientValidationPanel::CanSpawnPrecomputed() const
-{
-	return PrecomputedResult.bValid && Settings.IsValid() && Settings->TargetMesh != nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

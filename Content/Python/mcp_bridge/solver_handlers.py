@@ -233,8 +233,7 @@ def _candidate_structs(values: Any) -> list[Any]:
 
         bbox_center, bbox_half_extents = _candidate_bbox(value, index)
         semantic_score = _first_present(value, "semantic_score", "SemanticScore", "score", default=1.0)
-        relative_orientation = _first_present(value, "relative_orientation", "RelativeOrientation", "rel", "relative_pose")
-        relative_axes = _first_present(value, "relative_orientation_axes", "RelativeOrientationAxes", "relative_axes")
+        ref_orientation = _first_present(value, "ref_orientation", "RefOrientation", "ref_pose", "ref")
         target_orientation = _first_present(value, "target_orientation", "TargetOrientation", "target_pose", "target_abs")
         num_directions = _first_present(value, "num_directions", "NumDirections", default=1)
         thumbnail_camera = _first_present(value, "thumbnail_camera", "thumbnail_camera_rotation", "ThumbnailCamera", "ThumbnailCameraRotation")
@@ -244,35 +243,20 @@ def _candidate_structs(values: Any) -> list[Any]:
         _set_struct_property(candidate, "bbox_center", bbox_center)
         _set_struct_property(candidate, "bbox_half_extents", bbox_half_extents)
         _set_struct_property(candidate, "semantic_score", float(semantic_score))
-        if relative_orientation is not None:
-            _set_struct_property(candidate, "b_has_orientation", True)
-            _set_struct_property(candidate, "relative_orientation", _to_rotator(relative_orientation))
-            _set_struct_property(candidate, "num_directions", int(num_directions or 0))
-            # Dual Image: the raw Orient relative pose (azimuth, polar, rotation).
-            # The C++ solver rebuilds the geometry from these angles (chirality-aware
-            # change of basis), so forward the triple as-is instead of an FRotator.
-            relative_pose_vec = _relative_pose_vector(relative_orientation)
-            if relative_pose_vec is not None:
-                _set_struct_property(candidate, "b_has_relative_pose", True)
-                _set_struct_property(candidate, "relative_orientation_pose", relative_pose_vec)
-        if isinstance(relative_axes, dict):
-            _set_struct_property(candidate, "b_has_orientation", True)
-            _set_struct_property(candidate, "relative_orientation_x", _vector_from_value(_first_present(relative_axes, "x", "X"), unreal.Vector(1.0, 0.0, 0.0)))
-            _set_struct_property(candidate, "relative_orientation_y", _vector_from_value(_first_present(relative_axes, "y", "Y"), unreal.Vector(0.0, 1.0, 0.0)))
-            _set_struct_property(candidate, "relative_orientation_z", _vector_from_value(_first_present(relative_axes, "z", "Z"), unreal.Vector(0.0, 0.0, 1.0)))
-            _set_struct_property(candidate, "num_directions", int(num_directions or 0))
         if target_orientation is not None:
             _set_struct_property(candidate, "b_has_orientation", True)
             _set_struct_property(candidate, "num_directions", int(num_directions or 0))
-            # Dual Image (preferred path): the model's absolute target_abs pose
-            # (azimuth, polar, rotation) = the object's pose in the scene-capture
-            # camera frame. The C++ solver maps it straight to the Unreal world
-            # frame via World = C_scene * M * Obj(target) * M^-1, with no thumbnail
-            # camera extrinsic involved.
+            # Dual Image: absolute ref/target_abs poses. C++ maps both through the
+            # calibrated single-image basis and applies target * ref^-1 in world space.
             target_pose_vec = _relative_pose_vector(target_orientation)
             if target_pose_vec is not None:
                 _set_struct_property(candidate, "b_has_target_pose", True)
                 _set_struct_property(candidate, "target_orientation_pose", target_pose_vec)
+        if ref_orientation is not None:
+            ref_pose_vec = _relative_pose_vector(ref_orientation)
+            if ref_pose_vec is not None:
+                _set_struct_property(candidate, "b_has_ref_pose", True)
+                _set_struct_property(candidate, "ref_orientation_pose", ref_pose_vec)
         if thumbnail_camera is not None:
             _set_struct_property(candidate, "b_has_thumbnail_camera", True)
             _set_struct_property(candidate, "thumbnail_camera_rotation", _to_rotator(thumbnail_camera))
@@ -320,10 +304,8 @@ def _settings_struct(value: Any) -> Any:
         _set_struct_property(settings, "orient_mode", _orient_mode_value(_first_present(value, "orient_mode", "OrientMode")))
     if "concept_camera_rotation" in value or "ConceptCameraRotation" in value:
         _set_struct_property(settings, "concept_camera_rotation", _to_rotator(_first_present(value, "concept_camera_rotation", "ConceptCameraRotation")))
-    if "orient_basis_rotation" in value or "OrientBasisRotation" in value:
-        _set_struct_property(settings, "orient_basis_rotation", _to_rotator(_first_present(value, "orient_basis_rotation", "OrientBasisRotation")))
-    if "thumbnail_camera_rotation" in value or "ThumbnailCameraRotation" in value:
-        _set_struct_property(settings, "thumbnail_camera_rotation", _to_rotator(_first_present(value, "thumbnail_camera_rotation", "ThumbnailCameraRotation")))
+    _set_int_setting(settings, value, "orient_basis_candidate_index", "OrientBasisCandidateIndex")
+    _set_bool_setting(settings, value, "orient_swap_front_right", "bOrientSwapFrontRight")
 
     _set_float_setting(settings, value, "weight_semantic", "WeightSemantic")
     _set_float_setting(settings, value, "weight_geometry", "WeightGeometry")
@@ -367,7 +349,13 @@ def _set_int_setting(settings: Any, values: dict[str, Any], *names: str) -> None
 def _set_bool_setting(settings: Any, values: dict[str, Any], *names: str) -> None:
     value = _first_present(values, *names)
     if value is not None:
-        _set_any_struct_property(settings, ("normalize_semantic", "b_normalize_semantic"), bool(value))
+        candidates: list[str] = []
+        for name in names:
+            python_name = _python_property_name(name)
+            candidates.append(python_name)
+            if python_name.startswith("b_"):
+                candidates.append(python_name[2:])
+        _set_any_struct_property(settings, tuple(candidates), bool(value))
 
 
 def _scale_mode_value(value: Any) -> Any:
@@ -379,7 +367,7 @@ def _combine_mode_value(value: Any) -> Any:
 
 
 def _orient_mode_value(value: Any) -> Any:
-    return _enum_value(("SceneAssemblyOrientMode", "ESceneAssemblyOrientMode"), value, ("legacy",))
+    return _enum_value(("SceneAssemblyOrientMode", "ESceneAssemblyOrientMode"), value, ("dualimage", "dual"))
 
 
 def _enum_value(type_names: tuple[str, ...], requested: Any, default_names: tuple[str, ...]) -> Any:

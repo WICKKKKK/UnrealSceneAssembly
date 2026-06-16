@@ -44,21 +44,24 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Rotation计算|M_basis", meta = (DisplayName = "翻转列2", ToolTip = "对 M_basis 的第 2 列取负。"))
 	bool bSingleImageFlipColumn2 = false;
 
+	UPROPERTY(VisibleAnywhere, Category = "单图朝向结果", meta = (DisplayName = "World Rotation"))
+	FRotator SingleImageWorldRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(VisibleAnywhere, Category = "单图朝向结果", meta = (DisplayName = "Orient Pose"))
+	FString SingleImageOrientPose;
+
+	UPROPERTY(VisibleAnywhere, Category = "单图朝向结果", meta = (DisplayName = "状态"))
+	FString SingleImageStatus = TEXT("尚未计算。");
+
 	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "World Rotation"))
 	FRotator DualImageWorldRotation = FRotator::ZeroRotator;
 
-	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "Relative Pose"))
-	FString DualImageRelativePose;
+	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "Ref Pose"))
+	FString DualImageRefPose;
+
+	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "Target Pose"))
+	FString DualImageTargetPose;
 
 	UPROPERTY(VisibleAnywhere, Category = "Dual Image 结果", meta = (DisplayName = "状态"))
 	FString DualImageStatus = TEXT("尚未计算。");
-
-	UPROPERTY(VisibleAnywhere, Category = "Precomputed 结果", meta = (DisplayName = "World Rotation"))
-	FRotator PrecomputedWorldRotation = FRotator::ZeroRotator;
-
-	UPROPERTY(VisibleAnywhere, Category = "Precomputed 结果", meta = (DisplayName = "Relative Pose"))
-	FString PrecomputedRelativePose;
-
-	UPROPERTY(VisibleAnywhere, Category = "Precomputed 结果", meta = (DisplayName = "状态"))
-	FString PrecomputedStatus = TEXT("尚未计算。");
 };

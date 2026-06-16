@@ -112,29 +112,25 @@ def compute_dual_image_rotation(params: dict[str, Any] | None = None) -> dict[st
     timings["download_thumbnail_ms"] = _elapsed_ms(started)
 
     started = time.perf_counter()
-    # Direction B: ref = asset thumbnail, target = scene capture. The model returns
-    # the relative pose ref -> target, i.e. thumbnail -> scene, which is exactly the
-    # rotation we need to place the asset into the scene. The scene image carries the
-    # real background so it is the one that benefits from background removal.
-    response = clip_request_json(
-        "/orient/predict",
-        {
-            "image_ref": thumbnail_data_uri,
-            "image_tgt": scene_data_uri,
-            "do_rm_bkg_ref": False,
-            "do_rm_bkg_tgt": True,
-        },
-        timeout=None,
-    )
+    # shared_target: one scene target with the asset thumbnail as ref. The service
+    # returns ref and target_abs, both absolute Orient poses in their own image
+    # camera frames; C++ applies the validated single-image basis to both.
+    response = _orient_predict_shared_target(scene_data_uri, [thumbnail_data_uri], do_rm_bkg_ref=False, do_rm_bkg_tgt=True, timeout=None)
     timings["orient_predict_ms"] = _elapsed_ms(started)
     timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
     if not isinstance(response, dict):
         raise SceneCommandError("Dual Image orient response is not a valid object.")
-    rel = response.get("rel")
+    results = response.get("results")
+    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+        raise SceneCommandError("Dual Image shared_target response does not contain results[0].")
+    result = results[0]
+    rel = result.get("rel")
     if not isinstance(rel, dict):
         raise SceneCommandError("Dual Image orient response does not contain rel pose.")
-    ref_pose = response.get("ref") if isinstance(response.get("ref"), dict) else None
-    target_pose = response.get("target_abs") if isinstance(response.get("target_abs"), dict) else None
+    ref_pose = result.get("ref") if isinstance(result.get("ref"), dict) else None
+    if not isinstance(ref_pose, dict):
+        raise SceneCommandError("Dual Image orient response does not contain ref pose.")
+    target_pose = result.get("target_abs") if isinstance(result.get("target_abs"), dict) else None
     if not isinstance(target_pose, dict):
         raise SceneCommandError("Dual Image orient response does not contain target_abs pose.")
     thumb_pose = metadata.get("orient_pose") if isinstance(metadata.get("orient_pose"), dict) else None
@@ -153,51 +149,9 @@ def compute_dual_image_rotation(params: dict[str, Any] | None = None) -> dict[st
         relative_orientation=rel,
         num_directions=num_directions,
         branches=branches,
-        relative_orientation_axes=_pose_axes(rel),
         thumbnail_camera=metadata.get("thumbnail_camera"),
         ref_pose=ref_pose,
         target_pose=target_pose,
-        thumb_pose=thumb_pose,
-        timings=timings,
-    )
-
-
-def compute_precomputed_rotation(params: dict[str, Any] | None = None) -> dict[str, Any]:
-    params = params or {}
-    total_started = time.perf_counter()
-    timings: dict[str, float | None] = {}
-
-    started = time.perf_counter()
-    scene_data_uri = _scene_image_data_uri(params)
-    timings["read_scene_ms"] = _elapsed_ms(started)
-
-    started = time.perf_counter()
-    asset_path = _required_asset_path(params)
-    metadata = _query_orient_validation_metadata(asset_path)
-    timings["query_metadata_ms"] = _elapsed_ms(started)
-    thumb_pose = metadata.get("orient_pose")
-    if not isinstance(thumb_pose, dict):
-        raise SceneCommandError("Asset metadata does not contain orient_pose: {0}".format(asset_path))
-
-    started = time.perf_counter()
-    response = _orient_predict(scene_data_uri, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=None)
-    timings["orient_predict_ms"] = _elapsed_ms(started)
-    timings["service_latency_ms"] = _optional_float(response.get("latency_ms")) if isinstance(response, dict) else None
-    crop_pose = response.get("ref") if isinstance(response, dict) else None
-    if not isinstance(crop_pose, dict):
-        raise SceneCommandError("Precomputed orient response does not contain concept pose.")
-    rel = _relative_pose_from_absolute(crop_pose, thumb_pose)
-    timings["total_ms"] = _elapsed_ms(total_started)
-    return _success(
-        mode="Precomputed",
-        asset_path=metadata.get("asset_path") or _normalize_asset_path(asset_path),
-        asset_id=metadata.get("asset_id"),
-        collection_name=metadata.get("collection_name"),
-        orient_thumbnail_url=metadata.get("orient_thumbnail_url"),
-        relative_orientation=rel,
-        relative_orientation_axes=_pose_axes(rel),
-        thumbnail_camera=metadata.get("thumbnail_camera"),
-        crop_pose=crop_pose,
         thumb_pose=thumb_pose,
         timings=timings,
     )
@@ -632,8 +586,8 @@ def _settings_from_params(params: dict[str, Any]) -> dict[str, Any]:
         "combine_mode",
         "orient_mode",
         "concept_camera_rotation",
-        "orient_basis_rotation",
-        "thumbnail_camera_rotation",
+        "orient_basis_candidate_index",
+        "orient_swap_front_right",
         "weight_semantic",
         "weight_geometry",
         "scale_sensitivity",
@@ -714,14 +668,12 @@ def _query_orient_validation_metadata_from_collection(collection_name: str, asse
             continue
         orient_pose = source.get("orient_pose")
         thumbnail_camera = source.get("thumbnail_camera")
-        if not isinstance(thumbnail_camera, dict):
-            continue
         return {
             "asset_id": source.get("asset_id") or asset_id,
             "asset_path": record_path,
             "collection_name": collection_name,
             "orient_pose": orient_pose if isinstance(orient_pose, dict) else None,
-            "thumbnail_camera": thumbnail_camera,
+            "thumbnail_camera": thumbnail_camera if isinstance(thumbnail_camera, dict) else None,
             "orient_thumbnail_url": source.get("orient_thumbnail_url"),
         }
     return None
@@ -759,12 +711,12 @@ def _retrieval_model(params: dict[str, Any]) -> str:
 
 
 def _orient_mode(params: dict[str, Any]) -> str:
-    value = str(params.get("orient_mode") or "Precomputed").strip().lower().replace("-", "_").replace(" ", "_")
+    value = str(params.get("orient_mode") or "DualImage").strip().lower().replace("-", "_").replace(" ", "_")
     if value in {"legacy", "off", "none"}:
         return "Legacy"
-    if value in {"dual", "dual_image", "dualimage", "two_image", "twoimage"}:
+    if value in {"dual", "dual_image", "dualimage", "two_image", "twoimage", "precomputed"}:
         return "DualImage"
-    return "Precomputed"
+    return "DualImage"
 
 
 def _settings_with_camera(settings: dict[str, Any], capture_context: dict[str, Any], orient_mode: str) -> dict[str, Any]:
@@ -775,7 +727,7 @@ def _settings_with_camera(settings: dict[str, Any], capture_context: dict[str, A
         output["concept_camera_rotation"] = camera_rotation
     raw_params = capture_context.get("params")
     params = raw_params if isinstance(raw_params, dict) else {}
-    for key in ("orient_basis_rotation", "thumbnail_camera_rotation"):
+    for key in ("orient_basis_candidate_index", "orient_swap_front_right"):
         if key in params and key not in output:
             output[key] = params[key]
     return output
@@ -791,29 +743,7 @@ def _capture_camera_rotation(capture_context: dict[str, Any]) -> Any:
 def _with_orientation(candidates: list[dict[str, Any]], data_uri: str, orient_mode: str, timeout: float | None) -> list[dict[str, Any]]:
     if orient_mode == "Legacy":
         return candidates
-    if orient_mode == "DualImage":
-        return _with_dual_image_orientation(candidates, data_uri, timeout)
-    return _with_precomputed_orientation(candidates, data_uri, timeout)
-
-
-def _with_precomputed_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float | None) -> list[dict[str, Any]]:
-    response = _orient_predict(data_uri, do_rm_bkg_ref=True, do_rm_bkg_tgt=True, timeout=timeout)
-    crop_pose = response.get("ref") if isinstance(response, dict) else None
-    if not isinstance(crop_pose, dict):
-        return candidates
-    output = []
-    for candidate in candidates:
-        item = dict(candidate)
-        thumb_pose = candidate.get("orient_pose")
-        if isinstance(thumb_pose, dict):
-            rel = _relative_pose_from_absolute(crop_pose, thumb_pose)
-            item["relative_orientation"] = rel
-            item["relative_orientation_axes"] = _pose_axes(rel)
-            item["num_directions"] = int(thumb_pose.get("num_directions", 1) or 0)
-            if isinstance(candidate.get("thumbnail_camera"), dict):
-                item["thumbnail_camera"] = candidate.get("thumbnail_camera")
-        output.append(item)
-    return output
+    return _with_dual_image_orientation(candidates, data_uri, timeout)
 
 
 def _candidate_orientation_image_ref(candidate: dict[str, Any]) -> str:
@@ -843,41 +773,40 @@ def _http_image_to_data_uri(image_ref: str, timeout: float | None) -> str:
 
 
 def _with_dual_image_orientation(candidates: list[dict[str, Any]], data_uri: str, timeout: float | None) -> list[dict[str, Any]]:
-    image_refs = [_candidate_orientation_image_ref(candidate) for candidate in candidates]
-    if any(not image_ref for image_ref in image_refs):
-        return candidates
+    image_refs = []
+    for candidate in candidates:
+        image_ref = _candidate_orientation_image_ref(candidate)
+        image_refs.append(image_ref)
+        if not image_ref:
+            unreal.log_warning("[SceneAssembly] DualImage skipped candidate without orient thumbnail: {0}".format(candidate.get("asset_path") or candidate.get("AssetPath") or ""))
     output = []
     for candidate, image_ref in zip(candidates, image_refs):
         item = dict(candidate)
-        # Direction B: ref = asset thumbnail, target = scene capture (data_uri).
+        if not image_ref:
+            output.append(item)
+            continue
+        # shared_target: ref = asset thumbnail, target = scene capture (data_uri).
         try:
             thumbnail_data_uri = _http_image_to_data_uri(image_ref, timeout)
         except Exception as exc:
             unreal.log_warning("[SceneAssembly] DualImage orient target download failed: {0}".format(exc))
             output.append(item)
             continue
-        response = clip_request_json(
-            "/orient/predict",
-            {
-                "image_ref": thumbnail_data_uri,
-                "image_tgt": data_uri,
-                "do_rm_bkg_ref": False,
-                "do_rm_bkg_tgt": True,
-            },
-            timeout=timeout,
-        )
-        rel = response.get("rel") if isinstance(response, dict) else None
-        ref = response.get("ref") if isinstance(response, dict) else None
-        target_pose = response.get("target_abs") if isinstance(response, dict) and isinstance(response.get("target_abs"), dict) else None
-        if isinstance(target_pose, dict):
+        response = _orient_predict_shared_target(data_uri, [thumbnail_data_uri], do_rm_bkg_ref=False, do_rm_bkg_tgt=True, timeout=timeout)
+        results = response.get("results") if isinstance(response, dict) else None
+        result = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else None
+        rel = result.get("rel") if isinstance(result, dict) else None
+        ref = result.get("ref") if isinstance(result, dict) else None
+        target_pose = result.get("target_abs") if isinstance(result, dict) and isinstance(result.get("target_abs"), dict) else None
+        if isinstance(target_pose, dict) and isinstance(ref, dict):
             thumb_pose = candidate.get("orient_pose") if isinstance(candidate.get("orient_pose"), dict) else None
             num_directions = _dual_image_num_directions(ref, thumb_pose)
             item["target_pose"] = target_pose
+            item["target_orientation"] = target_pose
             item["num_directions"] = num_directions
             item["branches"] = _dual_image_branches(target_pose, num_directions)
             if isinstance(rel, dict):
                 item["relative_orientation"] = rel
-                item["relative_orientation_axes"] = _pose_axes(rel)
             if isinstance(thumb_pose, dict):
                 item["thumb_pose"] = thumb_pose
             if isinstance(ref, dict):
@@ -900,19 +829,25 @@ def _orient_predict(image_ref: str, do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, ti
     )
 
 
+def _orient_predict_shared_target(image_tgt: str, image_refs: list[str], do_rm_bkg_ref: bool, do_rm_bkg_tgt: bool, timeout: float | None) -> dict[str, Any]:
+    return clip_request_json(
+        "/orient/predict/shared_target",
+        {
+            "image_tgt": image_tgt,
+            "image_refs": image_refs,
+            "do_rm_bkg_ref": bool(do_rm_bkg_ref),
+            "do_rm_bkg_tgt": bool(do_rm_bkg_tgt),
+        },
+        timeout=timeout,
+    )
+
+
 def _orient_preprocess(image_ref: str, timeout: float | None) -> dict[str, Any]:
     return clip_request_json(
         "/orient/preprocess",
         {"image": image_ref},
         timeout=timeout,
     )
-
-
-def _relative_pose_from_absolute(crop_pose: dict[str, Any], thumb_pose: dict[str, Any]) -> dict[str, float]:
-    crop_matrix = _pose_matrix(crop_pose)
-    thumb_matrix = _pose_matrix(thumb_pose)
-    rel = _mat_mul(crop_matrix, _mat_transpose(thumb_matrix))
-    return _matrix_to_pose(rel)
 
 
 def _pose_axes(pose: dict[str, Any]) -> dict[str, list[float]]:
@@ -965,11 +900,13 @@ def _dual_image_branches(target_pose: dict[str, Any], num_directions: int) -> li
             "polar": base_polar,
             "rotation": base_rot,
         }
+        branch = dict(target_pose)
+        branch.update(pose)
         branches.append(
             {
                 "azimuth_offset": offset,
-                "target_orientation": pose,
-                "target_orientation_axes": _pose_axes(pose),
+                "target_orientation": branch,
+                "target_orientation_axes": _pose_axes(branch),
             }
         )
     return branches
@@ -983,37 +920,11 @@ def _matrix_axes(matrix: list[list[float]]) -> dict[str, list[float]]:
     }
 
 
-def _matrix_rows(matrix: list[list[float]]) -> dict[str, list[float]]:
-    return {
-        "x": [matrix[0][0], matrix[0][1], matrix[0][2]],
-        "y": [matrix[1][0], matrix[1][1], matrix[1][2]],
-        "z": [matrix[2][0], matrix[2][1], matrix[2][2]],
-    }
-
-
 def _pose_matrix(pose: dict[str, Any]) -> list[list[float]]:
     az = math.radians(float(pose.get("azimuth", 0.0)))
     el = math.radians(float(pose.get("polar", pose.get("elevation", 0.0))))
     ro = math.radians(float(pose.get("rotation", 0.0)))
     return _mat_mul(_rot_x(ro), _mat_mul(_rot_y(el), _rot_z(-az)))
-
-
-def _matrix_to_pose(matrix: list[list[float]]) -> dict[str, float]:
-    # Inverse of R = Rx(rot) * Ry(polar) * Rz(-azimuth), matching Orient-Anything utils.
-    sin_el = max(-1.0, min(1.0, matrix[0][2]))
-    el = math.asin(sin_el)
-    cos_el = math.cos(el)
-    if abs(cos_el) > 1.0e-6:
-        ro = math.atan2(-matrix[1][2], matrix[2][2])
-        az = math.atan2(-matrix[0][1], matrix[0][0])
-    else:
-        ro = 0.0
-        az = math.atan2(matrix[1][0], matrix[1][1])
-    return {
-        "azimuth": math.degrees(az),
-        "polar": math.degrees(el),
-        "rotation": math.degrees(ro),
-    }
 
 
 def _rot_x(angle: float) -> list[list[float]]:
@@ -1036,10 +947,6 @@ def _rot_z(angle: float) -> list[list[float]]:
 
 def _mat_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
     return [[sum(a[row][k] * b[k][col] for k in range(3)) for col in range(3)] for row in range(3)]
-
-
-def _mat_transpose(matrix: list[list[float]]) -> list[list[float]]:
-    return [[matrix[col][row] for col in range(3)] for row in range(3)]
 
 
 def _base_random_seed(params: dict[str, Any]) -> int | None:
