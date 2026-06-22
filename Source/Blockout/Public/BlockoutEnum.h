@@ -17,6 +17,13 @@ enum class EBlockoutMaterialPresetType : uint8
 };
 
 UENUM(BlueprintType)
+enum class EBlockoutMaterialMode : uint8
+{
+	Custom UMETA(DisplayName = "Custom"),
+	Blockout UMETA(DisplayName = "Blockout"),
+};
+
+UENUM(BlueprintType)
 enum class EBlockoutSplinePointType : uint8
 {
 	Linear UMETA(DisplayName = "Linear"),
@@ -67,8 +74,64 @@ enum class EBlockoutVerticalAlignment : uint8
 };
 
 UENUM(BlueprintType)
+enum class EBlockoutSphereTopoType : uint8
+{
+	Box UMETA(DisplayName = "Box"),
+	LatLong UMETA(DisplayName = "LatLong"),
+};
+
+UENUM(BlueprintType)
 enum class EBlockoutInstanceType : uint8
 {
 	BlockoutPreset UMETA(DisplayName = "Blockout Preset"),
 	WorldBlockouts UMETA(DisplayName = "World Blockouts"),
+};
+
+UENUM(BlueprintType)
+enum class EBlockoutStairStepType : uint8
+{
+	AdaptiveStepNumber UMETA(DisplayName = "Adaptive Step Number"),
+	FixedStepNumber UMETA(DisplayName = "Fixed Step Number"),
+};
+
+UENUM(BlueprintType)
+enum class EBlockoutRampControlType : uint8
+{
+	Height UMETA(DisplayName = "Height"),
+	Angle UMETA(DisplayName = "Angle"),
+};
+
+UENUM(BlueprintType)
+enum class EBlockoutPlaceMode : uint8
+{
+	Placement UMETA(DisplayName = "放置"),
+	Box3D UMETA(DisplayName = "3D盒子"),
+	Box2D UMETA(DisplayName = "2D盒子"),
+	Line UMETA(DisplayName = "直线"),
+};
+
+UENUM(BlueprintType)
+enum class EBlockoutInteractiveMode : uint8
+{
+	Box3D UMETA(DisplayName = "3D盒子"),
+};
+
+UENUM(BlueprintType)
+enum class EBlockoutBoxAxis : uint8
+{
+	X UMETA(DisplayName = "X轴"),
+	Y UMETA(DisplayName = "Y轴"),
+	Z UMETA(DisplayName = "Z轴"),
+};
+
+USTRUCT(BlueprintType)
+struct BLOCKOUT_API FBlockoutMaterialColor
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FColor SurfaceColor = FColor::White;
+
+	UPROPERTY(BlueprintReadWrite)
+	FColor GridColor = FColor::Black;
 };

@@ -18,11 +18,18 @@ def clip_config() -> dict[str, Any]:
     api_key = str(getattr(scene_config, "API_KEY", "") or "").strip()
     if not api_key:
         raise RuntimeError("API_KEY is not configured in Content/Python/config.py")
+    orient_api_key = str(getattr(scene_config, "ORIENT_API_KEY", api_key) or api_key).strip()
+    if not orient_api_key:
+        raise RuntimeError("ORIENT_API_KEY is not configured in Content/Python/config.py")
+    base_url = str(getattr(scene_config, "BASE_URL", "http://localhost:8000") or "http://localhost:8000").rstrip("/")
+    orient_base_url = str(getattr(scene_config, "ORIENT_BASE_URL", base_url) or base_url).rstrip("/")
 
     return {
-        "base_url": str(getattr(scene_config, "BASE_URL", "http://localhost:8000") or "").rstrip("/"),
+        "base_url": base_url,
+        "orient_base_url": orient_base_url,
         "api_prefix": str(getattr(scene_config, "API_PREFIX", "/api/v1") or "").rstrip("/"),
         "api_key": api_key,
+        "orient_api_key": orient_api_key,
         "collection": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
         "collection_clip": str(getattr(scene_config, "COLLECTION_CLIP", "clip_assets_test") or "clip_assets_test"),
         "collection_dinov3": str(getattr(scene_config, "COLLECTION_DINOv3", "dinov3_assets_test") or "dinov3_assets_test"),
@@ -31,9 +38,15 @@ def clip_config() -> dict[str, Any]:
     }
 
 
+def _is_orient_path(path: str) -> bool:
+    path = path if path.startswith("/") else f"/{path}"
+    return path == "/orient" or path.startswith("/orient/")
+
+
 def clip_api_url(path: str, cfg: dict[str, Any]) -> str:
     path = path if path.startswith("/") else f"/{path}"
-    return f"{cfg['base_url']}{cfg['api_prefix']}{path}"
+    base_url = cfg["orient_base_url"] if _is_orient_path(path) else cfg["base_url"]
+    return f"{base_url}{cfg['api_prefix']}{path}"
 
 
 def absolute_public_url(url_or_path: str, cfg: dict[str, Any] | None = None) -> str:
@@ -50,12 +63,13 @@ def absolute_public_url(url_or_path: str, cfg: dict[str, Any] | None = None) -> 
 def clip_request_json(path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
     cfg = clip_config()
     body = json.dumps(payload).encode("utf-8")
+    api_key = cfg["orient_api_key"] if _is_orient_path(path) else cfg["api_key"]
     request = urllib.request.Request(
         clip_api_url(path, cfg),
         data=body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {cfg['api_key']}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         },

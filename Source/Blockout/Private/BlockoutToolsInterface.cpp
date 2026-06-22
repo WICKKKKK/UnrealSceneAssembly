@@ -6,15 +6,15 @@
 #include "BlockoutInstancer.h"
 #include "BlockoutLog.h"
 #include "BlockoutStruct.h"
-#include "Building/BlockoutArbiSlopingRoof.h"
-#include "Building/BlockoutHouse.h"
 #include "DetailCustomization/BlockoutMultiPropertyCustomization.h"
 #include "DetailCustomization/BlockoutSinglePropertyCustomization.h"
+#include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidgetBlueprint.h"
 #include "Interfaces/IPluginManager.h"
+#include "LevelEditor.h"
 #include "PropertyEditorModule.h"
-#include "Shape/BlockoutBox.h"
-#include "Shape/BlockoutPanel.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "FBlockoutToolsInterface"
 
@@ -48,6 +48,36 @@ void FBlockoutToolsInterface::UnregisterBlockoutPlacementMode()
 		RemoveAllItemsFromBlockoutPlacementMode();
 		IPlacementModeModule::Get().UnregisterPlacementCategory(BlockoutCategoryName);
 	}
+}
+
+void FBlockoutToolsInterface::SetupEntryPoints()
+{
+	if (!UToolMenus::IsToolMenuUIEnabled())
+	{
+		return;
+	}
+
+	UToolMenu* WindowMenu = UToolMenus::Get()->ExtendMenu(TEXT("MainFrame.MainMenu.Window"));
+	if (!WindowMenu)
+	{
+		return;
+	}
+
+	BlockoutSection = WindowMenu->FindSection(TEXT("Blockout"));
+	if (!BlockoutSection)
+	{
+		BlockoutSection = &WindowMenu->AddSection(
+			TEXT("Blockout"),
+			LOCTEXT("BlockoutHeader", "Blockout"),
+			FToolMenuInsert(TEXT("WindowGlobalTabSpawners"), EToolMenuInsertType::Before));
+	}
+
+	BlockoutSection->AddMenuEntry(
+		TEXT("OpenBlockoutPanel"),
+		LOCTEXT("OpenBlockoutPanel_Label", "Blockout Panel"),
+		LOCTEXT("OpenBlockoutPanel_Tooltip", "Opens the Blockout Panel."),
+		FSlateIcon(StyleSet->GetStyleSetName(), TEXT("Blockout.Icon")),
+		FUIAction(FExecuteAction::CreateRaw(this, &FBlockoutToolsInterface::OpenBlockoutToolsPanel)));
 }
 
 void FBlockoutToolsInterface::RegisterBlockoutDetailCustomizations()
@@ -130,6 +160,7 @@ void FBlockoutToolsInterface::RegisterBlockoutInterface()
 	RegisterBlockoutDetailCustomizations();
 	RegisterBlockoutAssetEventsCallback();
 	RegisterBlockoutStyleSet();
+	SetupEntryPoints();
 	RefreshBlockoutPlacementMode(BlockoutCategoryName);
 }
 
@@ -184,19 +215,6 @@ FPlacementModeID FBlockoutToolsInterface::AddItemToBlockoutPlacementMode(const F
 	return ID.GetValue();
 }
 
-void FBlockoutToolsInterface::AddClassToBlockoutPlacementMode(UClass* ActorClass, const FText& DisplayName, FName ThumbnailBrush)
-{
-	if (!IsValid(ActorClass) || !IPlacementModeModule::IsAvailable())
-	{
-		return;
-	}
-
-	FAssetData AssetData(ActorClass);
-	TOptional<FPlacementModeID> ID = IPlacementModeModule::Get().RegisterPlaceableItem(BlockoutCategoryName, MakeShareable(new FPlaceableItem(
-		*UActorFactory::StaticClass(), AssetData, ThumbnailBrush, NAME_None, TOptional<FLinearColor>(), TOptional<int32>(), DisplayName)));
-	RegisteredIDs.Add(ID.GetValue());
-}
-
 void FBlockoutToolsInterface::RefreshBlockoutPlacementMode(FName CategoryName)
 {
 	if (CategoryName != BlockoutCategoryName || !IPlacementModeModule::IsAvailable())
@@ -205,11 +223,6 @@ void FBlockoutToolsInterface::RefreshBlockoutPlacementMode(FName CategoryName)
 	}
 
 	RemoveAllItemsFromBlockoutPlacementMode();
-	AddClassToBlockoutPlacementMode(ABlockoutBox::StaticClass(), LOCTEXT("BlockoutBox", "Box"), FName("BlockoutShape.Thumbnail"));
-	AddClassToBlockoutPlacementMode(ABlockoutPanel::StaticClass(), LOCTEXT("BlockoutPanel", "Panel"), FName("BlockoutShape.Thumbnail"));
-	AddClassToBlockoutPlacementMode(ABlockoutHouse::StaticClass(), LOCTEXT("BlockoutHouse", "House"), FName("BlockoutShape.Thumbnail"));
-	AddClassToBlockoutPlacementMode(ABlockoutArbiSlopingRoof::StaticClass(), LOCTEXT("BlockoutRoof", "Arbi Sloping Roof"), FName("BlockoutShape.Thumbnail"));
-	AddClassToBlockoutPlacementMode(ABlockoutInstancer::StaticClass(), LOCTEXT("BlockoutInstancer", "Instancer"), FName("BlockoutInstancer.Thumbnail"));
 
 	TArray<FAssetData> BlueprintAssets;
 	if (GetBlueprintsFromBaseClass(ABlockoutBaseDynamicMeshActor::StaticClass(), BlueprintAssets))
@@ -230,6 +243,32 @@ void FBlockoutToolsInterface::RemoveAllItemsFromBlockoutPlacementMode()
 	}
 	RegisteredAssets.Empty();
 	RegisteredIDs.Empty();
+}
+
+void FBlockoutToolsInterface::OpenBlockoutToolsPanel()
+{
+	UEditorUtilityWidgetBlueprint* EditorWidgetBlueprint = LoadObject<UEditorUtilityWidgetBlueprint>(
+		nullptr, TEXT("/UnrealSceneAssembly/BlockoutTools/Blueprints/Utility/BlockoutToolsPanel.BlockoutToolsPanel"));
+	if (!EditorWidgetBlueprint)
+	{
+		UE_LOG(LogBlockout, Warning, TEXT("Failed to load BlockoutToolsPanel Editor Utility Widget."));
+		return;
+	}
+
+	UEditorUtilitySubsystem* EditorUtilitySubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>() : nullptr;
+	if (!EditorUtilitySubsystem)
+	{
+		return;
+	}
+
+	FName NewTabID;
+	EditorUtilitySubsystem->RegisterTabAndGetID(EditorWidgetBlueprint, NewTabID);
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+	const TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+	if (LevelEditorTabManager.IsValid() && LevelEditorTabManager->HasTabSpawner(NewTabID))
+	{
+		LevelEditorTabManager->TryInvokeTab(NewTabID);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

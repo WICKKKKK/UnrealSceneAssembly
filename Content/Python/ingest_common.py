@@ -25,13 +25,29 @@ class ApiError(RuntimeError):
         self.body = body
 
 
+def _is_orient_path(path):
+    path = path if str(path).startswith("/") else "/{0}".format(path)
+    return path == "/orient" or path.startswith("/orient/")
+
+
 def _api_url(path):
-    return "{0}{1}{2}".format(config.BASE_URL.rstrip("/"), config.API_PREFIX.rstrip("/"), path)
+    path = path if str(path).startswith("/") else "/{0}".format(path)
+    base_url = (getattr(config, "ORIENT_BASE_URL", config.BASE_URL) or config.BASE_URL) if _is_orient_path(path) else config.BASE_URL
+    return "{0}{1}{2}".format(base_url.rstrip("/"), config.API_PREFIX.rstrip("/"), path)
 
 
 def _headers():
     return {
         "Authorization": "Bearer {0}".format(config.API_KEY),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _headers_for(path):
+    api_key = (getattr(config, "ORIENT_API_KEY", config.API_KEY) or config.API_KEY) if _is_orient_path(path) else config.API_KEY
+    return {
+        "Authorization": "Bearer {0}".format(api_key),
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -56,7 +72,7 @@ def request_json(method, path, payload=None, timeout=None, allow_404=False):
     attempts = max(1, int(getattr(config, "HTTP_MAX_RETRIES", 1)))
     retry_delay = float(getattr(config, "HTTP_RETRY_DELAY_SECONDS", 1.0))
     for attempt in range(1, attempts + 1):
-        request = urllib.request.Request(url, data=body, headers=_headers(), method=method)
+        request = urllib.request.Request(url, data=body, headers=_headers_for(path), method=method)
         try:
             with urllib.request.urlopen(request, timeout=timeout or config.HTTP_TIMEOUT_SECONDS) as response:
                 return response.status, _decode_json(response.read())

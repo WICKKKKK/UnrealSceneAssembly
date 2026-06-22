@@ -15,11 +15,12 @@ public:
 
 	void RegisterBlockoutPlacementMode();
 	void UnregisterBlockoutPlacementMode();
+	void SetupEntryPoints();
 	FPlacementModeID AddItemToBlockoutPlacementMode(const FAssetData& AssetData);
-	void AddClassToBlockoutPlacementMode(UClass* ActorClass, const FText& DisplayName, FName ThumbnailBrush);
 	void RemoveAllItemsFromBlockoutPlacementMode();
 	void RefreshBlockoutPlacementMode(FName CategoryName);
 	bool GetBlueprintsFromBaseClass(UClass* InBaseClass, TArray<FAssetData>& FoundAssets);
+	void OpenBlockoutToolsPanel();
 
 	void RegisterBlockoutDetailCustomizations();
 	void UnregisterBlockoutDetailCustomizations();

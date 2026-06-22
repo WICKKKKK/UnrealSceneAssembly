@@ -2,7 +2,6 @@
 
 #include "BlockoutEnum.h"
 #include "BlockoutStruct.h"
-#include "Commons/BlockoutTypes.h"
 #include "Components/BlockoutBoxComponent.h"
 #include "Components/DynamicMeshComponent.h"
 #include "Components/TextRenderComponent.h"
@@ -109,11 +108,13 @@ public:
 	virtual void BeginPlay() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void Destroyed() override;
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostEditUndo() override;
 	virtual FName GetCustomIconName() const override;
 	virtual void PostEditMove(bool bFinished) override;
 	virtual void PostActorCreated() override;
 	virtual void PostEditImport() override;
+	virtual void PostLoad() override;
 	virtual void PostRegisterAllComponents() override;
 
 	void SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType InBlockoutMaterialPresetType)
@@ -139,6 +140,9 @@ public:
 private:
 	UMaterialInterface* GetDefaultBlockoutMaterial() const;
 	UMaterialInterface* GetSubtractiveMaterial() const;
+	void UpgradeToCurrentVersion(int32 LoadedVersion);
+
+	int32 LoadedBlockoutActorVersion = INDEX_NONE;
 
 protected:
 	UPROPERTY(BlueprintReadOnly, Category="General", meta=(AllowPrivateAccess="true"))
@@ -175,61 +179,76 @@ protected:
 	FString ExportedActorTag;
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, DisplayName="Show in HUD?", Category="Editor")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, DisplayName="是否显示在HUD?", Category="Editor")
 	bool bShowHUD = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, DisplayName="Interactive Edit?", Category="Editor")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, DisplayName="允许交互编辑?", Category="Editor")
 	bool bCanInteractiveEdit = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(EditCondition="bCanInteractiveEdit"), DisplayName="Interactive Mode", Category="Editor")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(EditCondition="bCanInteractiveEdit"), DisplayName="交互模式?", Category="Editor")
 	EBlockoutInteractiveMode InteractiveMode = EBlockoutInteractiveMode::Box3D;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(EditCondition="bCanInteractiveEdit"), DisplayName="Uniform Scale?", Category="Editor")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(EditCondition="bCanInteractiveEdit"), DisplayName="统一缩放?", Category="Editor")
 	bool bUnitScale = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Subtractive Mode", meta=(AllowPrivateAccess="true"))
+	// 开启则会将当前生成的 Mesh 作为布尔减法白盒, 可以对场景中其他白盒对象进行布尔切割
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="开启布尔减法模式", meta=(AllowPrivateAccess="true"))
 	bool bSubtractive = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Use Bounding Box To Subtract", meta=(AllowPrivateAccess="true", EditCondition="bSubtractive==true"))
+	// 开启则使用包围盒进行布尔切割而不是使用 Mesh
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="使用包围盒进行布尔减法", meta=(AllowPrivateAccess="true", EditCondition="bSubtractive==true"))
 	bool bUseBoundingBoxToSubtract = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="Disable Subtractive Component", meta=(AllowPrivateAccess="true"))
+	// 禁用布尔减法组件的效果, 禁用后将不会对其他白盒对象进行布尔切割
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="禁用布尔减法组件", meta=(AllowPrivateAccess="true"))
 	bool bDisableSubtractiveComp = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Can Be Subtracted", meta=(AllowPrivateAccess="true"))
+	// 是否可以被其他白盒对象进行布尔切割
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="是否可被布尔", meta=(AllowPrivateAccess="true"))
 	bool bCanBeSubtracted = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Show Bounding Box", meta=(AllowPrivateAccess="true"))
+	// 开启则会在白盒 Actor 上显示包围盒
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="显示包围盒", meta=(AllowPrivateAccess="true"))
 	bool bShowBoundingBox = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Use Pivot Preset", meta=(AllowPrivateAccess="true"))
+	// 开启则会使用 Pivot 预设
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="使用Pivot预设", meta=(AllowPrivateAccess="true"))
 	bool bUsePivotPreset = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Pivot Offset", meta=(AllowPrivateAccess="true", EditCondition="bUsePivotPreset==false"))
+	// Pivot 偏移
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Pivot偏移", meta=(AllowPrivateAccess="true", EditCondition="bUsePivotPreset==false"))
 	FVector OffsetPivot = FVector::ZeroVector;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Pivot Preset Mode", meta=(AllowPrivateAccess="true", EditCondition="bUsePivotPreset==true", EditConditionHides))
+	// Pivot 预设模式, 可以设置 Pivot 在 BoundingBox 不同面上的位置
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Pivot预设模式", meta=(AllowPrivateAccess="true", EditCondition="bUsePivotPreset==true", EditConditionHides))
 	FBlockoutIntervalModeVector PivotOffsetMode = FBlockoutIntervalModeVector(EBlockoutIntervalMode::Min, EBlockoutIntervalMode::Min, EBlockoutIntervalMode::Min);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Cast Shadows", meta=(AllowPrivateAccess="true"))
+	// 是否投射阴影
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="投射阴影", meta=(AllowPrivateAccess="true"))
 	bool bCastShadows = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Enable Collisions", meta=(AllowPrivateAccess="true"))
+	// 是否开启碰撞
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="开启碰撞", meta=(AllowPrivateAccess="true"))
 	bool bEnableCollisions = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Hidden In Game", meta=(AllowPrivateAccess="true"))
+	// 是否在 Game 模式下隐藏
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Game模式隐藏", meta=(AllowPrivateAccess="true"))
 	bool bHiddenInGame = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="Enable Snapping", meta=(AllowPrivateAccess="true"))
+	// 是否启用自动吸附功能
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="启用自动吸附", meta=(AllowPrivateAccess="true"))
 	bool bEnableSnapping = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="Snap Threshold", meta=(AllowPrivateAccess="true", Units="cm"))
+	// 最大吸附检测距离
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="吸附距离阈值", meta=(AllowPrivateAccess="true", Units="cm"))
 	float SnapThreshold = 50.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="Angle Threshold", meta=(AllowPrivateAccess="true", Units="deg"))
+	// 最大吸附角度（度）
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="角度吸附阈值", meta=(AllowPrivateAccess="true", Units="deg"))
 	float AngleThreshold = 10.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="Edge Snap Threshold", meta=(AllowPrivateAccess="true", Units="cm"))
+	// 最大边缘吸附距离
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", AdvancedDisplay, DisplayName="边缘吸附距离阈值", meta=(AllowPrivateAccess="true", Units="cm"))
 	float EdgeSnapThreshold = 50.0f;
 
 	FTransform SnapTransform = FTransform::Identity;
@@ -237,60 +256,75 @@ public:
 	float DebugDuration = 0.05f;
 	float DebugThickness = 2.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="Custom Material?")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="自定义材质?")
 	bool bUseCustomMaterial = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(EditCondition="bUseCustomMaterial", EditConditionHides), Category="Material", DisplayName="Material")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(EditCondition="bUseCustomMaterial", EditConditionHides), Category="Material", DisplayName="材质")
 	UMaterialInterface* CustomMaterial = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", meta=(EditCondition="!bUseCustomMaterial", EditConditionHides), AdvancedDisplay, DisplayName="Override Blueprint Material?")
+	// 开启后对当前白盒应用默认材质效果
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", meta=(EditCondition="!bUseCustomMaterial", EditConditionHides), AdvancedDisplay, DisplayName="覆盖蓝图材质?")
 	bool bApplyDefaultMaterial = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="Color Preset", meta=(AllowPrivateAccess="true", EditCondition="!bUseCustomMaterial && bApplyDefaultMaterial", EditConditionHides))
+	// 预设白盒材质类型, 可选 Orange | Blue | Green | Red | Grey | Dark
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="颜色预设", meta=(AllowPrivateAccess="true", EditCondition="!bUseCustomMaterial && bApplyDefaultMaterial", EditConditionHides))
 	EBlockoutMaterialPresetType BlockoutMaterialPresetType = EBlockoutMaterialPresetType::Orange;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="UV Controller", meta=(AllowPrivateAccess="true", EditCondition="!bUseCustomMaterial && bApplyDefaultMaterial", EditConditionHides))
+	// UV 控制器, 仅在白盒材质模式为 非自定义材质 时有效, 可以控制不同方向的 UV 翻转和偏移
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Material", DisplayName="UV控制器", meta=(AllowPrivateAccess="true", EditCondition="!bUseCustomMaterial && bApplyDefaultMaterial", EditConditionHides))
 	FBlockoutMaterialUVController UVController = FBlockoutMaterialUVController(FBlockoutSingleUVController(false, 0.0f), FBlockoutSingleUVController(false, 0.0f), FBlockoutSingleUVController(true, 0.0f));
 
 	UPROPERTY(Transient, DuplicateTransient)
 	UMaterialInstanceDynamic* BlockoutMaterialInstance = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Show Text Label", meta=(AllowPrivateAccess="true"))
+	// 是否显示文本标注
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="是否显示文本标注", meta=(AllowPrivateAccess="true"))
 	bool bShowTextLabel = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Text Size", meta=(AllowPrivateAccess="true"))
+	// 文本标注字体大小
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="字体大小", meta=(AllowPrivateAccess="true"))
 	float TextSize = 16.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Text Color", meta=(AllowPrivateAccess="true"))
+	// 文本标注字体颜色
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="字体颜色", meta=(AllowPrivateAccess="true"))
 	FColor TextColor = FColor::White;
 
 	TMap<EBlockoutTextPlaceMode, TMap<EBlockoutHorizontalAlignment, TMap<EBlockoutVerticalAlignment, FTextPlacementParams>>> TextPlacementLookupTable;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Place Mode", meta=(AllowPrivateAccess="true"))
+	// 文本标注摆放模式, 可以控制文本标注在 BoundingBox 不同面上的摆放位置
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="摆放模式", meta=(AllowPrivateAccess="true"))
 	EBlockoutTextPlaceMode TextPlaceMode = EBlockoutTextPlaceMode::YZPositive;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Horizontal Alignment", meta=(AllowPrivateAccess="true"))
+	// 文本标注水平对齐方式
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="水平对齐方式", meta=(AllowPrivateAccess="true"))
 	EBlockoutHorizontalAlignment TextHorizontalAlignment = EBlockoutHorizontalAlignment::Center;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Vertical Alignment", meta=(AllowPrivateAccess="true"))
+	// 文本标注垂直对齐方式
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="垂直对齐方式", meta=(AllowPrivateAccess="true"))
 	EBlockoutVerticalAlignment TextVerticalAlignment = EBlockoutVerticalAlignment::Center;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="Text Transform", meta=(AllowPrivateAccess="true"))
+	// 文本标注后处理 Transform
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Labeling", DisplayName="文本标注后处理Transform", meta=(AllowPrivateAccess="true"))
 	FBlockoutTransform TextTransform;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="Export Path", meta=(AllowPrivateAccess="true", LongPackageName))
+	// 导出路径
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="导出路径", meta=(AllowPrivateAccess="true", LongPackageName))
 	FDirectoryPath ExportPath;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="Export Materials", meta=(AllowPrivateAccess="true"))
+	// 开启则会在导出时将材质一并导出到同级目录下
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="导出材质", meta=(AllowPrivateAccess="true"))
 	bool bExportMaterials = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="Export StaticMesh Asset", meta=(AllowPrivateAccess="true"))
+	// 导出的 StaticMesh 资产
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Export", DisplayName="导出StaticMesh资产", meta=(AllowPrivateAccess="true"))
 	UStaticMesh* ExportStaticMesh = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debug", DisplayName="Debug Log", meta=(AllowPrivateAccess="true"))
+	// 是否输出 Debug Log
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debug", DisplayName="输出 DebugLog", meta=(AllowPrivateAccess="true"))
 	bool bShowDebugLog = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debug", DisplayName="Bounding Box Mode", meta=(AllowPrivateAccess="true"))
+	// 显示 BoundingBox 模式, 可以选择显示 LocalBox | GeneratedWorldBox | SubtractiveWorldBox
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debug", DisplayName="显示BoundingBox模式", meta=(AllowPrivateAccess="true"))
 	EBlockoutBoundingBoxMode BoundingBoxMode = EBlockoutBoundingBoxMode::LocalBox;
 
 	bool bNeedRebuildBlockoutMesh = true;

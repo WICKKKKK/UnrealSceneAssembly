@@ -17,6 +17,7 @@ public:
 	virtual void CPPGenerateBlockoutMesh();
 	virtual void MeshOptimization();
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="Smooth Normals", meta=(AllowPrivateAccess="true"))
+	// 开启后则会将 40° 以内的法线进行平滑处理
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", DisplayName="平滑法线", meta=(AllowPrivateAccess="true"))
 	bool bSmoothNormal = false;
 };

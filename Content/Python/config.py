@@ -2,6 +2,8 @@
 BASE_URL = "http://localhost:8000"
 API_PREFIX = "/api/v1"
 API_KEY = "jade_ak_pTKyjjFlDlHt2Z1eQubm6tAttiPL0Rzn"
+ORIENT_BASE_URL = "http://28.59.3.173"
+ORIENT_API_KEY = "jade_ak_G3MkCcPsy3XuPZ4epUyMFcD7yuzhUf0o"
 
 # 项目与 Milvus 集合名
 PROJECT_NAME = "blockout"
@@ -19,7 +21,7 @@ DINO_DIMENSION = 1280
 CLIP_DIMENSION = 768
 
 # 仅处理这些资源路径前缀下的资产
-ASSET_PATH_PREFIXES = ("/Game/FC_MilitaryCamp",)
+ASSET_PATH_PREFIXES = ("/Game/PolygonStreetRacer",)
 
 # 批处理大小
 EMBED_BATCH_SIZE = 64

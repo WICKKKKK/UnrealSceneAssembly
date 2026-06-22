@@ -2,6 +2,7 @@
 
 #include "BlockoutLog.h"
 #include "BlockoutSettings.h"
+#include "BlockoutToolsInterface.h"
 #include "Components/BillboardComponent.h"
 #include "Components/BlockoutSplineComponent.h"
 #include "EditorAssetLibrary.h"
@@ -24,8 +25,30 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Semantic/SceneSemanticComponent.h"
+#include "Serialization/CustomVersion.h"
 #include "UObject/ConstructorHelpers.h"
+
+struct FBlockoutActorVersion
+{
+	enum Type
+	{
+		BeforeCustomVersionWasAdded = 0,
+		InitialVersion = 1,
+
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	static const FGuid GUID;
+
+private:
+	FBlockoutActorVersion() = default;
+};
+
+const FGuid FBlockoutActorVersion::GUID(0xC9C64F0A, 0xE6D5444E, 0x9F4D9102, 0x3D4BC7A1);
+FCustomVersionRegistration GRegisterBlockoutActorVersion(FBlockoutActorVersion::GUID, FBlockoutActorVersion::LatestVersion, TEXT("BlockoutActorVersion"));
 
 ABlockoutBaseDynamicMeshActor::ABlockoutBaseDynamicMeshActor()
 {
@@ -157,6 +180,11 @@ void ABlockoutBaseDynamicMeshActor::AssignBlockoutMat()
 		return;
 	}
 
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("------------------------AssignBlockoutMat------------------------"));
+	}
+
 	if (!bUseCustomMaterial && !bApplyDefaultMaterial)
 	{
 		return;
@@ -171,6 +199,10 @@ void ABlockoutBaseDynamicMeshActor::AssignSubtractiveMat()
 {
 	if (SubtractiveMeshComp && SubtractiveMeshComp->GetDynamicMesh() && GetSubtractiveMaterial())
 	{
+		if (bShowDebugLog)
+		{
+			BlockoutLog(TEXT("------------------------AssignSubtractiveMat------------------------"));
+		}
 		SubtractiveMeshComp->SetMaterial(0, GetSubtractiveMaterial());
 	}
 }
@@ -231,6 +263,11 @@ void ABlockoutBaseDynamicMeshActor::OverlappingBoolean()
 	if (!bCanBeSubtracted || !UBlockoutLibrary_BasicFunctions::IsDynamicMeshValid(DynamicMeshComponent->GetDynamicMesh()))
 	{
 		return;
+	}
+
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("------------------------OverlappingBoolean------------------------"));
 	}
 
 	SubtractiveOverlappingBlockoutActors = GetOverlappingBlockoutActor(false, true);
@@ -299,6 +336,8 @@ void ABlockoutBaseDynamicMeshActor::CreateBlockoutMesh()
 
 void ABlockoutBaseDynamicMeshActor::SetBlockoutProperties()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::SetBlockoutProperties"), *GetName()));
+
 	DynamicMeshComponent->SetVisibility(!bSubtractive);
 	SubtractiveMeshComp->SetVisibility(bSubtractive);
 
@@ -590,7 +629,14 @@ void ABlockoutBaseDynamicMeshActor::GetBBox_Imp(FBox& OutLocalBox, FTransform& O
 
 void ABlockoutBaseDynamicMeshActor::RebuildBlockoutMesh()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::RebuildBlockoutMesh"), *GetName()));
+
 	AllTextLabelString.Empty();
+
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("--------------------------- Rebuild Blockout Mesh ---------------------------"));
+	}
 
 	if (UBlockoutLibrary_BasicFunctions::IsDynamicMeshValid(DynamicMeshComponent->GetDynamicMesh()))
 	{
@@ -610,6 +656,13 @@ void ABlockoutBaseDynamicMeshActor::RebuildBlockoutMesh()
 		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(SubtractiveMeshComp->GetDynamicMesh(), DynamicMeshComponent->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 	}
 
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("---------------------------RebuildBlockoutMesh---------------------------"));
+		BlockoutLog(TEXT("GeneratedMeshTriangleCount: ") + FString::FromInt(DynamicMeshComponent->GetDynamicMesh()->GetTriangleCount()));
+		BlockoutLog(TEXT("SubtractiveMeshTriangleCount: ") + FString::FromInt(SubtractiveMeshComp->GetDynamicMesh()->GetTriangleCount()));
+	}
+
 	if (bShowTextLabel && MainTextComp)
 	{
 		CreatePropertyTextLabel();
@@ -623,6 +676,13 @@ void ABlockoutBaseDynamicMeshActor::BlockoutLog(FString InLog)
 
 void ABlockoutBaseDynamicMeshActor::RebuildInteractiveAffect()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::RebuildInteractiveAffect"), *GetName()));
+
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("--------------------------- Rebuild Interactive Affect ---------------------------"));
+	}
+
 	if (bCanBeSubtracted && !bSubtractive)
 	{
 		DynamicMeshComponent->GetDynamicMesh()->Reset();
@@ -633,6 +693,8 @@ void ABlockoutBaseDynamicMeshActor::RebuildInteractiveAffect()
 
 void ABlockoutBaseDynamicMeshActor::UpdateCurrent(bool bForceRebuildBlockout, bool bForceRebuildInteractiveAffect, bool bRequestOverlappingBlockoutRebuild)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::Update"), *GetName()));
+
 	if (bFrozen || !IsValid(DynamicMeshComponent))
 	{
 		return;
@@ -654,6 +716,13 @@ void ABlockoutBaseDynamicMeshActor::UpdateCurrent(bool bForceRebuildBlockout, bo
 
 	GeneratedMeshAABB = CalMeshAABB(GeneratedMeshComp->GetDynamicMesh(), GetActorTransform());
 	SubtractiveMeshAABB = CalMeshAABB(SubtractiveMeshComp->GetDynamicMesh(), GetActorTransform());
+	if (bShowDebugLog)
+	{
+		BlockoutLog(TEXT("GeneratedMeshAABBMin: ") + GeneratedMeshAABB.Min.ToString());
+		BlockoutLog(TEXT("GeneratedMeshAABBMax: ") + GeneratedMeshAABB.Max.ToString());
+		BlockoutLog(TEXT("SubtractiveMeshAABBMin: ") + SubtractiveMeshAABB.Min.ToString());
+		BlockoutLog(TEXT("SubtractiveMeshAABBMax: ") + SubtractiveMeshAABB.Max.ToString());
+	}
 
 	if (bForceRebuildInteractiveAffect || bNeedRebuildInteractiveAffect)
 	{
@@ -737,7 +806,13 @@ void ABlockoutBaseDynamicMeshActor::UpdateAll()
 
 void ABlockoutBaseDynamicMeshActor::ProfileAllBlockoutUpdate()
 {
+	const bool bTraceStarted = GEditor && GetWorld() && GEditor->Exec(GetWorld(), TEXT("Trace.Start cpu,frame,gpu,memory,log,bookmark"));
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT("Blockout.UpdateAll");
 	UpdateAll();
+	if (bTraceStarted)
+	{
+		GEditor->Exec(GetWorld(), TEXT("Trace.Stop"));
+	}
 }
 
 void ABlockoutBaseDynamicMeshActor::ExportToStaticMeshActor(FString AssetExportPath)
@@ -866,7 +941,7 @@ void ABlockoutBaseDynamicMeshActor::Export()
 
 void ABlockoutBaseDynamicMeshActor::ShowBlockoutToolsPanel()
 {
-	UE_LOG(LogBlockout, Display, TEXT("BlockoutToolsPanel blueprint is not migrated in this module."));
+	FBlockoutToolsInterface::Get().OpenBlockoutToolsPanel();
 }
 
 void ABlockoutBaseDynamicMeshActor::UpdateBBox_Imp(const FBox& InLocalBox, const FTransform& InTransform, EBlockoutBoxAxis InMoveAxis)
@@ -923,6 +998,32 @@ void ABlockoutBaseDynamicMeshActor::PostActorCreated()
 void ABlockoutBaseDynamicMeshActor::PostEditImport()
 {
 	Super::PostEditImport();
+}
+
+void ABlockoutBaseDynamicMeshActor::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FBlockoutActorVersion::GUID);
+	LoadedBlockoutActorVersion = Ar.CustomVer(FBlockoutActorVersion::GUID);
+}
+
+void ABlockoutBaseDynamicMeshActor::PostLoad()
+{
+	Super::PostLoad();
+	UpgradeToCurrentVersion(LoadedBlockoutActorVersion);
+}
+
+void ABlockoutBaseDynamicMeshActor::UpgradeToCurrentVersion(int32 LoadedVersion)
+{
+	if (LoadedVersion == INDEX_NONE)
+	{
+		LoadedVersion = FBlockoutActorVersion::BeforeCustomVersionWasAdded;
+	}
+
+	if (LoadedVersion < FBlockoutActorVersion::InitialVersion)
+	{
+		// Future asset/data upgrade steps should be added here.
+	}
 }
 
 void ABlockoutBaseDynamicMeshActor::PostRegisterAllComponents()
@@ -1133,6 +1234,58 @@ void ABlockoutBaseDynamicMeshActor::EditorApplyRotation(const FRotator& DeltaRot
 	Super::EditorApplyRotation(DeltaRotation, bAltDown, bShiftDown, bCtrlDown);
 	bNeedRequestOverlappingBlockoutRebuild = true;
 	bNeedRebuildInteractiveAffect = true;
+
+	const TArray<ABlockoutBaseDynamicMeshActor*> SelectedBlockoutActors = UBlockoutLibrary_EditorFunctions::GetSelectedBlockoutActors();
+	if (SelectedBlockoutActors.Num() > 1)
+	{
+		return;
+	}
+
+	if (bEnableSnapping)
+	{
+		const FRotator CurrentRotation = GetActorRotation();
+		if (!CurrentRotation.Equals(PreviousRotation, 1e-4))
+		{
+			FBlockoutFace TargetFace;
+			FBlockoutFace OtherFace;
+			float NearestDistance = 0.0f;
+			FVector ProjectionPoint;
+			if (FindNearestFace(TargetFace, OtherFace, NearestDistance, ProjectionPoint))
+			{
+				FQuat AlignRotation = UBlockoutLibrary_FaceFunctions::CalculateAlignFaceNormalRotation(TargetFace.Normal, OtherFace);
+				const FVector TargetXRotated = AlignRotation.RotateVector(TargetFace.XAxis);
+				const FQuat AlignAxisRotation = UBlockoutLibrary_FaceFunctions::CalculateAlignFaceAxisRotation(TargetXRotated, OtherFace);
+				if (FMath::Abs(FMath::Cos(AlignAxisRotation.GetAngle())) >= FMath::Abs(FMath::Cos(FMath::DegreesToRadians(AngleThreshold))))
+				{
+					AlignRotation *= AlignAxisRotation;
+				}
+
+				if (AlignRotation.Equals(FQuat::Identity))
+				{
+					bNeedUpdateSnapTransform = false;
+					return;
+				}
+
+				const FVector RotatePivot = GetActorLocation();
+				const FVector ActorPivot = RotatePivot + GetActorRotation().RotateVector(GetPivotOffset());
+				const FVector DeltaLocation = AlignRotation.RotateVector(RotatePivot - ActorPivot) + ActorPivot - RotatePivot;
+
+				SnapTransform = FTransform(AlignRotation * GetActorRotation().Quaternion(), GetActorLocation() + DeltaLocation, GetActorScale3D());
+				if (bShowDebugLog)
+				{
+					UBlockoutLibrary_EditorFunctions::DrawDebugBlockoutBox(GetBoxFromBoundingBoxComp(), SnapTransform, FColor::Green, DebugDuration, true, DebugThickness);
+				}
+
+				bNeedUpdateSnapTransform = true;
+			}
+			else
+			{
+				bNeedUpdateSnapTransform = false;
+			}
+
+			PreviousRotation = CurrentRotation;
+		}
+	}
 }
 
 void ABlockoutBaseDynamicMeshActor::EditorApplyTranslation(const FVector& DeltaTranslation, bool bAltDown, bool bShiftDown, bool bCtrlDown)
@@ -1140,6 +1293,114 @@ void ABlockoutBaseDynamicMeshActor::EditorApplyTranslation(const FVector& DeltaT
 	Super::EditorApplyTranslation(DeltaTranslation, bAltDown, bShiftDown, bCtrlDown);
 	bNeedRequestOverlappingBlockoutRebuild = true;
 	bNeedRebuildInteractiveAffect = true;
+
+	const TArray<ABlockoutBaseDynamicMeshActor*> SelectedBlockoutActors = UBlockoutLibrary_EditorFunctions::GetSelectedBlockoutActors();
+	if (SelectedBlockoutActors.Num() > 1)
+	{
+		return;
+	}
+
+	if (bEnableSnapping)
+	{
+		const FVector CurrentLocation = GetActorLocation() + GetActorRotation().RotateVector(GetPivotOffset());
+		if (!CurrentLocation.Equals(PreviousLocation, 0.1f))
+		{
+			if (bShowDebugLog)
+			{
+				BlockoutLog(TEXT("Translation Detected!"));
+			}
+
+			FBlockoutFace TargetFace;
+			FBlockoutFace OtherFace;
+			float NearestDistance = 0.0f;
+			FVector ProjectionPoint;
+			if (FindNearestFace(TargetFace, OtherFace, NearestDistance, ProjectionPoint))
+			{
+				if (bShowDebugLog)
+				{
+					BlockoutLog(TEXT("Translation: FindNearestFace"));
+				}
+
+				const FVector DeltaTranslationNormalized = DeltaTranslation.GetSafeNormal();
+				FVector NormalSnappingDeltaLocation = FVector::ZeroVector;
+				if (FMath::Abs(FVector::DotProduct(DeltaTranslationNormalized, OtherFace.Normal)) > 0.01f)
+				{
+					NormalSnappingDeltaLocation = ProjectionPoint - TargetFace.Origin;
+				}
+
+				const FQuat AlignNormalRotation = UBlockoutLibrary_FaceFunctions::CalculateAlignFaceNormalRotation(TargetFace.Normal, OtherFace);
+				FVector EdgeSnappingDeltaLocation = FVector::ZeroVector;
+				FQuat AlignAxisRotation = FQuat::Identity;
+
+				const FVector ProjectedDeltaTranslation = UBlockoutLibrary_FaceFunctions::ProjectDirectionToFace(DeltaTranslationNormalized, OtherFace);
+				const FVector ProjectedDeltaTranslationNormalized = ProjectedDeltaTranslation.GetSafeNormal(1e-3);
+				if (!ProjectedDeltaTranslationNormalized.IsZero())
+				{
+					FBlockoutFace RotatedTargetFace = UBlockoutLibrary_FaceFunctions::RotateFaceByOrigin(TargetFace, AlignNormalRotation);
+					RotatedTargetFace.Origin = ProjectionPoint;
+
+					float MinEdgeDistance = 0.0f;
+					FVector TargetAxis;
+					FVector OtherAxis;
+					const bool bFoundMinDistanceEdge = UBlockoutLibrary_FaceFunctions::CalculateMinEdgeDistanceBetweenFacesInDirection(
+						RotatedTargetFace, OtherFace, ProjectedDeltaTranslationNormalized, MinEdgeDistance, TargetAxis, OtherAxis);
+					if (bFoundMinDistanceEdge && MinEdgeDistance <= EdgeSnapThreshold)
+					{
+						const FVector TargetAxisNormalized = TargetAxis.GetSafeNormal();
+						const FVector OtherAxisNormalized = OtherAxis.GetSafeNormal();
+						const float AxisDotProduct = FVector::DotProduct(TargetAxisNormalized, OtherAxisNormalized);
+						if (FMath::Abs(AxisDotProduct) >= FMath::Cos(FMath::DegreesToRadians(AngleThreshold)))
+						{
+							const FVector OtherEdgeCenter = OtherFace.Origin + OtherAxis;
+							AlignAxisRotation = FQuat::FindBetweenVectors(TargetAxisNormalized, OtherAxisNormalized);
+							const FVector RotatedTargetEdgeCenter = AlignAxisRotation.RotateVector(TargetAxis) + RotatedTargetFace.Origin;
+							EdgeSnappingDeltaLocation = FVector::DotProduct(OtherEdgeCenter - RotatedTargetEdgeCenter, OtherAxisNormalized) * OtherAxisNormalized;
+						}
+					}
+				}
+
+				if (NormalSnappingDeltaLocation.IsZero() && EdgeSnappingDeltaLocation.IsZero())
+				{
+					bNeedUpdateSnapTransform = false;
+					return;
+				}
+
+				FQuat AlignRotation = FQuat::Identity;
+				FVector DeltaLocation = FVector::ZeroVector;
+				if (!NormalSnappingDeltaLocation.IsZero())
+				{
+					AlignRotation *= AlignNormalRotation;
+					DeltaLocation += NormalSnappingDeltaLocation;
+				}
+
+				if (!EdgeSnappingDeltaLocation.IsZero())
+				{
+					AlignRotation *= AlignAxisRotation;
+					DeltaLocation += EdgeSnappingDeltaLocation;
+				}
+
+				if (!AlignRotation.Equals(FQuat::Identity))
+				{
+					const FVector ActorPivot = GetActorLocation();
+					DeltaLocation += AlignRotation.RotateVector(ActorPivot - TargetFace.Origin) + TargetFace.Origin - ActorPivot;
+				}
+
+				SnapTransform = FTransform(AlignRotation * GetActorRotation().Quaternion(), GetActorLocation() + DeltaLocation, GetActorScale3D());
+				if (bShowDebugLog)
+				{
+					UBlockoutLibrary_EditorFunctions::DrawDebugBlockoutBox(GetBoxFromBoundingBoxComp(), SnapTransform, FColor::Green, DebugDuration, true, DebugThickness);
+				}
+
+				bNeedUpdateSnapTransform = true;
+			}
+			else
+			{
+				bNeedUpdateSnapTransform = false;
+			}
+
+			PreviousLocation = CurrentLocation;
+		}
+	}
 }
 
 void ABlockoutBaseDynamicMeshActor::EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown)

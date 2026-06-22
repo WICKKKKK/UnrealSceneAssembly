@@ -6,7 +6,7 @@
 #include "BlockoutHouse.generated.h"
 
 UENUM(BlueprintType)
-enum class EHouseRoofType : uint8
+enum class EBlockoutHouseRoofType : uint8
 {
 	SlopingRoof UMETA(DisplayName="Sloping Roof"),
 	FlatRoof UMETA(DisplayName="Flat Roof"),
@@ -45,21 +45,21 @@ public:
 	bool bGenerateRoof = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", EditCondition="bGenerateRoof==true", EditConditionHides))
-	EHouseRoofType RoofType = EHouseRoofType::SlopingRoof;
+	EBlockoutHouseRoofType RoofType = EBlockoutHouseRoofType::SlopingRoof;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EHouseRoofType::SlopingRoof", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EBlockoutHouseRoofType::SlopingRoof", EditConditionHides))
 	float SlopingRoofHeight = 200.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.0f, UIMax=180.0f, EditCondition="bGenerateRoof==true && RoofType==EHouseRoofType::SlopingRoof", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.0f, UIMax=180.0f, EditCondition="bGenerateRoof==true && RoofType==EBlockoutHouseRoofType::SlopingRoof", EditConditionHides))
 	float RotateRidgeAngle = 0.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EHouseRoofType::FlatRoof", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EBlockoutHouseRoofType::FlatRoof", EditConditionHides))
 	float RoofThickness = 20.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", EditCondition="bGenerateRoof==true && RoofType==EHouseRoofType::FlatRoof", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", EditCondition="bGenerateRoof==true && RoofType==EBlockoutHouseRoofType::FlatRoof", EditConditionHides))
 	bool bWithParapet = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EHouseRoofType::FlatRoof && bWithParapet==true", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Roof", meta=(AllowPrivateAccess="true", UIMin=0.01f, ClampMin=0.01f, EditCondition="bGenerateRoof==true && RoofType==EBlockoutHouseRoofType::FlatRoof && bWithParapet==true", EditConditionHides))
 	float ParapetHeight = 120.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Wall", meta=(AllowPrivateAccess="true"))

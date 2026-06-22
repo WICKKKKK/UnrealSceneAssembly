@@ -220,7 +220,7 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 		
 		switch(RoofType)
 		{
-		case EHouseRoofType::SlopingRoof:
+		case EBlockoutHouseRoofType::SlopingRoof:
 			UBlockoutLibrary_GeometryFunctions::GenerateRoofMesh(
 				RoofMesh,
 				GetComputeMeshPool(),
@@ -237,7 +237,7 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 				FGeometryScriptAppendMeshOptions()
 				);
 			break;
-		case EHouseRoofType::FlatRoof:
+		case EBlockoutHouseRoofType::FlatRoof:
 			FlatRoofExtrudeOptions.ExtrudeDistance = RoofThickness;
 			UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 				RoofMesh,

@@ -7,8 +7,10 @@
 #include "GeometryScript/MeshBasicEditFunctions.h"
 #include "GeometryScript/MeshBooleanFunctions.h"
 #include "GeometryScript/MeshNormalsFunctions.h"
+#include "GeometryScript/MeshQueryFunctions.h"
 #include "GeometryScript/MeshTransformFunctions.h"
 #include "LevelEditor.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ISceneOutliner.h"
 #include "Shape/BlockoutBox.h"
 
@@ -37,6 +39,8 @@ void ABlockoutInstancer::CreateBlockoutMesh()
 
 void ABlockoutInstancer::SpawnPresetBlockoutActor()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::SpawnPresetBlockoutActor"), *GetName()));
+
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		return;
@@ -89,6 +93,8 @@ void ABlockoutInstancer::SpawnPresetBlockoutActor()
 
 void ABlockoutInstancer::SetPresetBlockoutActorProperties()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::SetPresetBlockoutActorProperties"), *GetName()));
+
 	if (!IsValid(PresetBlockoutActor))
 	{
 		return;
@@ -137,6 +143,8 @@ bool ABlockoutInstancer::CheckPresetActorReferenced()
 
 void ABlockoutInstancer::GetInstanceMesh()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::GetInstanceMesh"), *GetName()));
+
 	if (UBlockoutLibrary_BasicFunctions::IsDynamicMeshValid(InstanceMeshComp->GetDynamicMesh()))
 	{
 		InstanceMeshComp->GetDynamicMesh()->Reset();
@@ -184,6 +192,8 @@ void ABlockoutInstancer::GetInstanceMesh()
 
 void ABlockoutInstancer::PreprocessInstanceMesh()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::PreprocessInstanceMesh"), *GetName()));
+
 	InstanceMesh = AllocateComputeMesh();
 	UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(InstanceMesh, InstanceMeshComp->GetDynamicMesh(), FTransform::Identity, false, FGeometryScriptAppendMeshOptions());
 
@@ -210,10 +220,22 @@ void ABlockoutInstancer::CPPInstanceMeshPlacement()
 
 void ABlockoutInstancer::InstanceMeshPlacement()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("%s::InstanceMeshPlacement"), *GetName()));
+
 	CPPInstanceMeshPlacement();
 
 	FEditorScriptExecutionGuard Guard;
 	OnRebuildGeneratedMesh(DynamicMeshComponent->GetDynamicMesh());
+
+	if (bShowDebugLog)
+	{
+		UDynamicMesh* Mesh = DynamicMeshComponent->GetDynamicMesh();
+		UE_LOG(LogBlockout, Warning, TEXT("----------------------AfterCreateBlockoutMesh-----------------------"));
+		UE_LOG(LogBlockout, Warning, TEXT("AfterCreate VertexCount: %d"), UGeometryScriptLibrary_MeshQueryFunctions::GetVertexCount(Mesh));
+		UE_LOG(LogBlockout, Warning, TEXT("Instance VertexCount: %d"), UGeometryScriptLibrary_MeshQueryFunctions::GetVertexCount(InstanceMesh));
+		UE_LOG(LogBlockout, Warning, TEXT("AfterCreate NumVertexIDs: %d"), UGeometryScriptLibrary_MeshQueryFunctions::GetNumVertexIDs(Mesh));
+		UE_LOG(LogBlockout, Warning, TEXT("AfterCreate IsDenseMesh: %s"), UGeometryScriptLibrary_MeshQueryFunctions::GetIsDenseMesh(Mesh) ? TEXT("true") : TEXT("false"));
+	}
 }
 
 void ABlockoutInstancer::UpdateCurrent(bool bForceRebuildBlockout, bool bForceRebuildInteractiveAffect, bool bRequestOverlappingBlockoutRebuild)
