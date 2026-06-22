@@ -1,11 +1,11 @@
 #pragma once
 
 #include "BlockoutBaseGenerator.h"
-#include "Components/SplineComponent.h"
+#include "Components/BlockoutSplineComponent.h"
 
 #include "BlockoutArbiSlopingRoof.generated.h"
 
-UCLASS(BlueprintType, Blueprintable)
+UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Arbi Sloping Roof"))
 class BLOCKOUT_API ABlockoutArbiSlopingRoof : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
@@ -16,7 +16,7 @@ public:
 
 protected:
 	UPROPERTY(Category="DynamicMeshActor", BlueprintReadWrite, meta=(AllowPrivateAccess="true"))
-	USplineComponent* SplineComp = nullptr;
+	UBlockoutSplineComponent* SplineComp = nullptr;
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params", meta=(AllowPrivateAccess="true", MakeEditWidget="true", UIMin=0.0f, ClampMin=0.0f))

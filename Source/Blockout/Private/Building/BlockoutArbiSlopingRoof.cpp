@@ -8,7 +8,7 @@ ABlockoutArbiSlopingRoof::ABlockoutArbiSlopingRoof()
 {
 	SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType::Grey);
 
-	SplineComp = CreateDefaultSubobject<USplineComponent>(TEXT("Spline"));
+	SplineComp = CreateDefaultSubobject<UBlockoutSplineComponent>(TEXT("Spline"));
 	SplineComp->SetupAttachment(DynamicMeshComponent);
 	FSplinePoint Point;
 	SplineComp->AddPoint(Point, false);
@@ -29,7 +29,17 @@ ABlockoutArbiSlopingRoof::ABlockoutArbiSlopingRoof()
 
 void ABlockoutArbiSlopingRoof::CPPGenerateBlockoutMesh()
 {
+	if (!IsValid(SplineComp))
+	{
+		return;
+	}
+
 	int PointNum = SplineComp->GetNumberOfSplinePoints();
+	if (PointNum < 3)
+	{
+		return;
+	}
+
 	FVector SplineCenter = FVector::ZeroVector;
 	for(int i=0; i<PointNum; ++i)
 	{

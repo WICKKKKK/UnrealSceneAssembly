@@ -1,7 +1,7 @@
 #pragma once
 
 #include "BlockoutBaseGenerator.h"
-#include "Components/SplineComponent.h"
+#include "Components/BlockoutSplineComponent.h"
 
 #include "BlockoutHouse.generated.h"
 
@@ -12,7 +12,7 @@ enum class EBlockoutHouseRoofType : uint8
 	FlatRoof UMETA(DisplayName="Flat Roof"),
 };
 
-UCLASS(BlueprintType, Blueprintable)
+UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="House"))
 class BLOCKOUT_API ABlockoutHouse : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
@@ -23,7 +23,7 @@ public:
 
 protected:
 	UPROPERTY(Category="DynamicMeshActor", BlueprintReadWrite, meta=(AllowPrivateAccess="true"))
-	USplineComponent* SplineComp = nullptr;
+	UBlockoutSplineComponent* SplineComp = nullptr;
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params|Floor", meta=(AllowPrivateAccess="true"))

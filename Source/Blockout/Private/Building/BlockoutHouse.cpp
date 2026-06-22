@@ -12,7 +12,7 @@ ABlockoutHouse::ABlockoutHouse()
 {
 	SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType::Grey);
 
-	SplineComp = CreateDefaultSubobject<USplineComponent>(TEXT("Spline"));
+	SplineComp = CreateDefaultSubobject<UBlockoutSplineComponent>(TEXT("Spline"));
 	SplineComp->SetupAttachment(DynamicMeshComponent);
 	FSplinePoint Point;
 	SplineComp->AddPoint(Point, false);
@@ -35,6 +35,11 @@ ABlockoutHouse::ABlockoutHouse()
 
 void ABlockoutHouse::CPPGenerateBlockoutMesh()
 {
+	if (!IsValid(SplineComp) || SplineComp->GetNumberOfSplinePoints() < 2)
+	{
+		return;
+	}
+
 	TArray<int> OutSplineIndexes;
 	TArray<FVector> OutSplinePoints;
 	TArray<FVector> OutTangetList;
@@ -46,7 +51,8 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 
 	WallHeight = FVector(BaseFloorThickness.X, BaseFloorThickness.Y, FMath::Max(WallHeight.Z, BaseFloorThickness.Z+0.01f));
 
-	int FloorNum = FMath::TruncToInt((WallHeight.Z - BaseFloorThickness.Z) / FloorHeight);
+	const float SafeFloorHeight = FMath::Max(FloorHeight, 0.01f);
+	const int FloorNum = FMath::Max(1, FMath::TruncToInt((WallHeight.Z - BaseFloorThickness.Z) / SafeFloorHeight));
 
 	UDynamicMesh* PlanMesh = AllocateComputeMesh();
 	
@@ -160,42 +166,48 @@ void ABlockoutHouse::CPPGenerateBlockoutMesh()
 				HoleSize.Z
 				);
 
-			int WindowNum = FMath::TruncToInt(SplineComp->GetSplineLength() / HoleInterval);
-			float IOfCurWindow = 1.0f/float(WindowNum);
-			FTransform AppendTransform = FTransform::Identity;
-			
-			for (int i=0; i<WindowNum; ++i)
+			const int WindowNum = FMath::TruncToInt(SplineComp->GetSplineLength() / FMath::Max(HoleInterval, 0.01f));
+			if (WindowNum > 0)
 			{
-				FTransform CurLocTransform = SplineComp->GetTransformAtTime(
-					FMath::Clamp(float(i)*IOfCurWindow, 0.0f, 1.0f), ESplineCoordinateSpace::Local, true);
-				AppendTransform.SetLocation(CurLocTransform.GetLocation() + FVector(0.0f, 0.0f, BaseFloorThickness.Z));
-				AppendTransform.SetRotation(FQuat(FRotator(0.0f, FRotator(CurLocTransform.GetRotation()).Yaw,0.0f)));
-				UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
+				const float IOfCurWindow = 1.0f/float(WindowNum);
+				FTransform AppendTransform = FTransform::Identity;
+				
+				for (int i=0; i<WindowNum; ++i)
+				{
+					FTransform CurLocTransform = SplineComp->GetTransformAtTime(
+						FMath::Clamp(float(i)*IOfCurWindow, 0.0f, 1.0f), ESplineCoordinateSpace::Local, true);
+					AppendTransform.SetLocation(CurLocTransform.GetLocation() + FVector(0.0f, 0.0f, BaseFloorThickness.Z));
+					AppendTransform.SetRotation(FQuat(FRotator(0.0f, FRotator(CurLocTransform.GetRotation()).Yaw,0.0f)));
+					UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
+						AllWindowMesh,
+						WindowMesh,
+						AppendTransform,
+						false,
+						FGeometryScriptAppendMeshOptions()
+						);
+				}
+
+				if (FloorNum > 1)
+				{
+					UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
+						AllWindowMesh,
+						AllWindowMesh,
+						FTransform(FVector(0.0f, 0.0f, (WallHeight.Z-BaseFloorThickness.Z)/float(FloorNum))),
+						FloorNum-1,
+						true,
+						false,
+						FGeometryScriptAppendMeshOptions()
+						);
+				}
+				UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshBoolean(
+					WallMesh,
+					FTransform::Identity,
 					AllWindowMesh,
-					WindowMesh,
-					AppendTransform,
-					false,
-					FGeometryScriptAppendMeshOptions()
+					FTransform(FVector(0.0f, 0.0f, HoleHeightOffset)),
+					EGeometryScriptBooleanOperation::Subtract,
+					FGeometryScriptMeshBooleanOptions()
 					);
 			}
-
-			UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
-				AllWindowMesh,
-				AllWindowMesh,
-				FTransform(FVector(0.0f, 0.0f, (WallHeight.Z-BaseFloorThickness.Z)/float(FloorNum))),
-				FloorNum-1,
-				true,
-				false,
-				FGeometryScriptAppendMeshOptions()
-				);
-			UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshBoolean(
-				WallMesh,
-				FTransform::Identity,
-				AllWindowMesh,
-				FTransform(FVector(0.0f, 0.0f, HoleHeightOffset)),
-				EGeometryScriptBooleanOperation::Subtract,
-				FGeometryScriptMeshBooleanOptions()
-				);
 		}
 		UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 			DynamicMeshComponent->GetDynamicMesh(),

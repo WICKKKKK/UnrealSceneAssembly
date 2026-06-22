@@ -5,7 +5,7 @@
 
 #include "BlockoutPanel.generated.h"
 
-UCLASS(BlueprintType, Blueprintable)
+UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Panel"))
 class BLOCKOUT_API ABlockoutPanel : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
