@@ -6,7 +6,7 @@
 #include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "UObject/ConstructorHelpers.h"
 
-ABlockoutPanel::ABlockoutPanel()
+ADEPRECATED_BlockoutPanel::ADEPRECATED_BlockoutPanel()
 {
 	bApplyDefaultMaterial = false;
 
@@ -19,7 +19,7 @@ ABlockoutPanel::ABlockoutPanel()
 	}
 }
 
-void ABlockoutPanel::CPPGenerateBlockoutMesh()
+void ADEPRECATED_BlockoutPanel::CPPGenerateBlockoutMesh()
 {
 	FGeometryScriptPrimitiveOptions RoundRectOptions;
 	FTransform PanelTransform;

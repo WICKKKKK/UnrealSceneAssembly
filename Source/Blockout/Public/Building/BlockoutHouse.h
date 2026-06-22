@@ -12,13 +12,13 @@ enum class EBlockoutHouseRoofType : uint8
 	FlatRoof UMETA(DisplayName="Flat Roof"),
 };
 
-UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="House"))
-class BLOCKOUT_API ABlockoutHouse : public ABlockoutBaseGenerator
+UCLASS(Deprecated, NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="House", DeprecationMessage="BlockoutHouse is deprecated."))
+class BLOCKOUT_API ADEPRECATED_BlockoutHouse : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
 
 public:
-	ABlockoutHouse();
+	ADEPRECATED_BlockoutHouse();
 	virtual void CPPGenerateBlockoutMesh() override;
 
 protected:

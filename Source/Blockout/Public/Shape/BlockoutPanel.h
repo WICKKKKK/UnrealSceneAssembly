@@ -5,13 +5,13 @@
 
 #include "BlockoutPanel.generated.h"
 
-UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Panel"))
-class BLOCKOUT_API ABlockoutPanel : public ABlockoutBaseGenerator
+UCLASS(Deprecated, NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Panel", DeprecationMessage="BlockoutPanel is deprecated."))
+class BLOCKOUT_API ADEPRECATED_BlockoutPanel : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
 
 public:
-	ABlockoutPanel();
+	ADEPRECATED_BlockoutPanel();
 	virtual void CPPGenerateBlockoutMesh() override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Params", meta=(AllowPrivateAccess="true", MakeEditWidget="true", UIMin=0.01, ClampMin=0.01))

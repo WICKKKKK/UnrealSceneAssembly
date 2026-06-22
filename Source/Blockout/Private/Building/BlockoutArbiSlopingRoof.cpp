@@ -4,7 +4,7 @@
 #include "Functions/BlockoutLibrary_GeometryFunctions.h"
 
 
-ABlockoutArbiSlopingRoof::ABlockoutArbiSlopingRoof()
+ADEPRECATED_BlockoutArbiSlopingRoof::ADEPRECATED_BlockoutArbiSlopingRoof()
 {
 	SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType::Grey);
 
@@ -27,7 +27,7 @@ ABlockoutArbiSlopingRoof::ABlockoutArbiSlopingRoof()
 	UBlockoutLibrary_SplineFunctions::SetSplinePointType(SplineComp, EBlockoutSplinePointType::Linear);
 }
 
-void ABlockoutArbiSlopingRoof::CPPGenerateBlockoutMesh()
+void ADEPRECATED_BlockoutArbiSlopingRoof::CPPGenerateBlockoutMesh()
 {
 	if (!IsValid(SplineComp))
 	{

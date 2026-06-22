@@ -8,7 +8,7 @@
 #include "GeometryScript/MeshModelingFunctions.h"
 #include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "GeometryScript/MeshTransformFunctions.h"
-ABlockoutHouse::ABlockoutHouse()
+ADEPRECATED_BlockoutHouse::ADEPRECATED_BlockoutHouse()
 {
 	SetBlockoutMaterialPresetType(EBlockoutMaterialPresetType::Grey);
 
@@ -33,7 +33,7 @@ ABlockoutHouse::ABlockoutHouse()
 }
 
 
-void ABlockoutHouse::CPPGenerateBlockoutMesh()
+void ADEPRECATED_BlockoutHouse::CPPGenerateBlockoutMesh()
 {
 	if (!IsValid(SplineComp) || SplineComp->GetNumberOfSplinePoints() < 2)
 	{

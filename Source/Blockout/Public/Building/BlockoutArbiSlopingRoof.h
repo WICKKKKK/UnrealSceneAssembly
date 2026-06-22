@@ -5,13 +5,13 @@
 
 #include "BlockoutArbiSlopingRoof.generated.h"
 
-UCLASS(NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Arbi Sloping Roof"))
-class BLOCKOUT_API ABlockoutArbiSlopingRoof : public ABlockoutBaseGenerator
+UCLASS(Deprecated, NotBlueprintable, BlueprintType, meta=(BlockoutPlaceable, DisplayName="Arbi Sloping Roof", DeprecationMessage="BlockoutArbiSlopingRoof is deprecated."))
+class BLOCKOUT_API ADEPRECATED_BlockoutArbiSlopingRoof : public ABlockoutBaseGenerator
 {
 	GENERATED_BODY()
 
 public:
-	ABlockoutArbiSlopingRoof();
+	ADEPRECATED_BlockoutArbiSlopingRoof();
 	virtual void CPPGenerateBlockoutMesh() override;
 
 protected:
