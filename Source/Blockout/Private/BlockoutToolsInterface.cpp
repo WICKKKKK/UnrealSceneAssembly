@@ -15,6 +15,7 @@
 #include "PropertyEditorModule.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "ToolMenus.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "FBlockoutToolsInterface"
 
@@ -215,6 +216,45 @@ FPlacementModeID FBlockoutToolsInterface::AddItemToBlockoutPlacementMode(const F
 	return ID.GetValue();
 }
 
+FPlacementModeID FBlockoutToolsInterface::AddNativeClassToBlockoutPlacementMode(UClass* NativeClass)
+{
+	check(IsValid(NativeClass));
+	const FName Thumbnail = NativeClass->IsChildOf(ABlockoutInstancer::StaticClass()) ? FName("BlockoutInstancer.Thumbnail") : FName("BlockoutShape.Thumbnail");
+	const FText DisplayName = NativeClass->GetDisplayNameText();
+	TOptional<FPlacementModeID> ID = IPlacementModeModule::Get().RegisterPlaceableItem(BlockoutCategoryName, MakeShareable(new FPlaceableItem(
+		nullptr, FAssetData(NativeClass), Thumbnail, NAME_None, TOptional<FLinearColor>(), TOptional<int32>(), DisplayName)));
+	return ID.GetValue();
+}
+
+void FBlockoutToolsInterface::GetNativePlaceableClassesFromBaseClass(UClass* InBaseClass, TArray<UClass*>& FoundClasses)
+{
+	FoundClasses.Empty();
+	if (!IsValid(InBaseClass))
+	{
+		return;
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		if (!IsValid(Class)
+			|| !Class->IsNative()
+			|| Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists)
+			|| !Class->IsChildOf(InBaseClass)
+			|| !Class->HasMetaData(TEXT("BlockoutPlaceable")))
+		{
+			continue;
+		}
+
+		FoundClasses.Add(Class);
+	}
+
+	FoundClasses.Sort([](const UClass& A, const UClass& B)
+	{
+		return A.GetDisplayNameText().ToString() < B.GetDisplayNameText().ToString();
+	});
+}
+
 void FBlockoutToolsInterface::RefreshBlockoutPlacementMode(FName CategoryName)
 {
 	if (CategoryName != BlockoutCategoryName || !IPlacementModeModule::IsAvailable())
@@ -233,6 +273,14 @@ void FBlockoutToolsInterface::RefreshBlockoutPlacementMode(FName CategoryName)
 			RegisteredAssets.Add(Asset);
 		}
 	}
+
+	TArray<UClass*> NativeClasses;
+	GetNativePlaceableClassesFromBaseClass(ABlockoutBaseDynamicMeshActor::StaticClass(), NativeClasses);
+	for (UClass* NativeClass : NativeClasses)
+	{
+		RegisteredIDs.Add(AddNativeClassToBlockoutPlacementMode(NativeClass));
+		RegisteredClassNameArray.Add(NativeClass->GetFName());
+	}
 }
 
 void FBlockoutToolsInterface::RemoveAllItemsFromBlockoutPlacementMode()
@@ -243,6 +291,7 @@ void FBlockoutToolsInterface::RemoveAllItemsFromBlockoutPlacementMode()
 	}
 	RegisteredAssets.Empty();
 	RegisteredIDs.Empty();
+	RegisteredClassNameArray.Empty();
 }
 
 void FBlockoutToolsInterface::OpenBlockoutToolsPanel()

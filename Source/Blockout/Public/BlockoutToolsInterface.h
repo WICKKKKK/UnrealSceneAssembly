@@ -17,6 +17,8 @@ public:
 	void UnregisterBlockoutPlacementMode();
 	void SetupEntryPoints();
 	FPlacementModeID AddItemToBlockoutPlacementMode(const FAssetData& AssetData);
+	FPlacementModeID AddNativeClassToBlockoutPlacementMode(UClass* NativeClass);
+	void GetNativePlaceableClassesFromBaseClass(UClass* InBaseClass, TArray<UClass*>& FoundClasses);
 	void RemoveAllItemsFromBlockoutPlacementMode();
 	void RefreshBlockoutPlacementMode(FName CategoryName);
 	bool GetBlueprintsFromBaseClass(UClass* InBaseClass, TArray<FAssetData>& FoundAssets);
